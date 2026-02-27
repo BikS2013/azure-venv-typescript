@@ -1,0 +1,6 @@
+node_modules
+dist
+.azure-venv-manifest.json
+*.tsbuildinfo
+coverage
+.env
