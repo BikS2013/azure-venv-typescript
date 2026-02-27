@@ -1,7 +1,9 @@
 import * as path from 'node:path';
 
 import type { AzureVenvOptions } from './config/types.js';
-import type { SyncResult, EnvRecord } from './types/index.js';
+import type { SyncResult, EnvRecord, EnvDetails } from './types/index.js';
+import { manifestToSyncedFiles } from './introspection/manifest-reader.js';
+import { buildFileTree } from './introspection/file-tree.js';
 import { NO_OP_SYNC_RESULT } from './types/index.js';
 import { validateConfig } from './config/validator.js';
 import { createLogger } from './logging/logger.js';
@@ -128,7 +130,20 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
     // STEP 8: Sync remaining files
     const syncStats = await syncEngine.syncFiles(config);
 
-    // STEP 9: Build and return SyncResult
+    // STEP 9: Build introspection data from manifest and env result
+    const finalManifest = await manifestManager.load();
+    const syncedFiles = manifestToSyncedFiles(finalManifest);
+    const fileTree = buildFileTree(syncedFiles);
+
+    const envDetails: EnvDetails = {
+      variables: envResult.variables,
+      sources: envResult.sources,
+      localKeys: [...envResult.localKeys],
+      remoteKeys: [...envResult.remoteKeys],
+      osKeys: [...envResult.osKeys],
+    };
+
+    // STEP 10: Build and return SyncResult
     const duration = Date.now() - startTime;
 
     const result: SyncResult = {
@@ -141,6 +156,9 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
       duration,
       remoteEnvLoaded,
       envSources: envResult.sources,
+      syncedFiles,
+      fileTree,
+      envDetails,
     };
 
     logger.info(
@@ -172,6 +190,15 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
         duration: Date.now() - startTime,
         remoteEnvLoaded: false,
         envSources: {},
+        syncedFiles: [],
+        fileTree: [],
+        envDetails: {
+          variables: {},
+          sources: {},
+          localKeys: [],
+          remoteKeys: [],
+          osKeys: [],
+        },
       };
     }
 
@@ -196,6 +223,15 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
       duration: Date.now() - startTime,
       remoteEnvLoaded: false,
       envSources: {},
+      syncedFiles: [],
+      fileTree: [],
+      envDetails: {
+        variables: {},
+        sources: {},
+        localKeys: [],
+        remoteKeys: [],
+        osKeys: [],
+      },
     };
   }
 }

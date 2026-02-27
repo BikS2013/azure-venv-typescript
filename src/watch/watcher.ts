@@ -9,7 +9,10 @@ import type {
   WatchResult,
   WatchChangeType,
   EnvRecord,
+  EnvDetails,
 } from '../types/index.js';
+import { manifestToSyncedFiles } from '../introspection/manifest-reader.js';
+import { buildFileTree } from '../introspection/file-tree.js';
 import { NO_OP_SYNC_RESULT } from '../types/index.js';
 import type { Logger } from '../logging/logger.js';
 import type { BlobInfo } from '../azure/types.js';
@@ -417,6 +420,19 @@ export async function watchAzureVenv(
     // STEP 8: Sync remaining files
     const syncStats = await syncEngine.syncFiles(config);
 
+    // Build introspection data from manifest and env result
+    const finalManifest = await manifestManager.load();
+    const syncedFiles = manifestToSyncedFiles(finalManifest);
+    const fileTree = buildFileTree(syncedFiles);
+
+    const envDetails: EnvDetails = {
+      variables: envResult.variables,
+      sources: envResult.sources,
+      localKeys: [...envResult.localKeys],
+      remoteKeys: [...envResult.remoteKeys],
+      osKeys: [...envResult.osKeys],
+    };
+
     // Build the initial SyncResult
     const duration = Date.now() - startTime;
     const initialSync: SyncResult = {
@@ -429,6 +445,9 @@ export async function watchAzureVenv(
       duration,
       remoteEnvLoaded,
       envSources: envResult.sources,
+      syncedFiles,
+      fileTree,
+      envDetails,
     };
 
     logger.info(
@@ -484,6 +503,15 @@ export async function watchAzureVenv(
           duration: Date.now() - startTime,
           remoteEnvLoaded: false,
           envSources: {},
+          syncedFiles: [],
+          fileTree: [],
+          envDetails: {
+            variables: {},
+            sources: {},
+            localKeys: [],
+            remoteKeys: [],
+            osKeys: [],
+          },
         },
         stop: () => {
           /* no-op */
@@ -513,6 +541,15 @@ export async function watchAzureVenv(
         duration: Date.now() - startTime,
         remoteEnvLoaded: false,
         envSources: {},
+        syncedFiles: [],
+        fileTree: [],
+        envDetails: {
+          variables: {},
+          sources: {},
+          localKeys: [],
+          remoteKeys: [],
+          osKeys: [],
+        },
       },
       stop: () => {
         /* no-op */

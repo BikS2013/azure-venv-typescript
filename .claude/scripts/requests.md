@@ -4,7 +4,7 @@ So when the hosting app is starting it must read the local .env file and any env
 If among these settings found the AZURE_VENV variable and the AZURE_VENV_SAS_TOKEN the library must use them to attach the Azure blob storage folder pointed by the AZURE_VENV to the root folder of the hosting application.
 Which means that all the files and folders under the AZURE_VENV folder must appear as files and folders under the hosting application. 
 If between the files in the AZURE_VENV folder there is a .env file it must be consider and treated as an environment variables file, and all the settings from this file to be loaded to the app environment variables space before other actions take place, to allow these variables to be used by the operations. 
-
+---
 
 
 /team-workflow
@@ -20,3 +20,9 @@ I want you to review the implementation evaluate it according to the following d
    A - The orphan files management is not part of the scope yet 
 5. Q - What is the maximum blob size threshold for switching from `downloadToFile()` to streaming?
    A - The maximum blob size idealy must be configurable either through `local` environment variable, or through an environment variable retrieved by the .env file from the AZURE_VENV file space. 
+
+---
+
+/team-workflow 
+I want you to implement an option that allows hosting application to get a tree of the folders and files the azure-venv introduce.
+I want you to implement a second option that allows hosting application to get a list of the variables the azure-venv introduce through the .env file that hosts. 

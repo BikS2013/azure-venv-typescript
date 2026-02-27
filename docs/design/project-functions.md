@@ -407,6 +407,53 @@ Orphan files are local files that exist in the sync manifest but no longer exist
 
 ---
 
+### FR-026: File Tree Introspection
+
+**Priority:** Medium
+**Phase:** Plan 003 - Phase 1-2
+**Plan Reference:** [plan-003-introspection-features.md](plan-003-introspection-features.md)
+
+After sync completes, the library must provide the hosting application with a structured representation of all files synced from Azure Blob Storage. This data is included in the `SyncResult` object as two fields:
+
+- `syncedFiles`: A flat, sorted list of `SyncedFileInfo` objects, each containing `localPath`, `blobName`, `size`, `lastModified`, and `etag`.
+- `fileTree`: A hierarchical array of `FileTreeNode` objects representing the directory structure, with nested `children` for directories.
+
+The data source is the sync manifest (`SyncManifest.entries`), which is the authoritative record of all synced files. In incremental mode, the manifest includes all previously synced files, not just those downloaded in the current cycle.
+
+A standalone utility function `buildFileTree(syncedFiles)` is also exported for consumers who need to rebuild the tree at any time.
+
+**Inputs:** Sync manifest entries (post-sync)
+**Outputs:** `SyncResult.syncedFiles` (flat list), `SyncResult.fileTree` (hierarchical tree)
+**No-op case:** When azure-venv is not configured, both fields are empty arrays.
+**Error fallback case:** When sync fails with `failOnError=false`, both fields are empty arrays.
+
+---
+
+### FR-027: Environment Variable Introspection
+
+**Priority:** Medium
+**Phase:** Plan 003 - Phase 1-2
+**Plan Reference:** [plan-003-introspection-features.md](plan-003-introspection-features.md)
+
+After sync completes, the library must provide the hosting application with a structured view of all environment variables managed by azure-venv. This data is included in the `SyncResult` object as a new `envDetails` field of type `EnvDetails`:
+
+- `variables`: Key-value map of all tracked environment variables (from all three tiers).
+- `sources`: Map of variable name to source tier (`'os'`, `'remote'`, or `'local'`).
+- `localKeys`: Array of keys from the local `.env` file.
+- `remoteKeys`: Array of keys from the remote `.env` file.
+- `osKeys`: Array of OS environment keys that were preserved.
+
+The existing `envSources` field on `SyncResult` is retained for backward compatibility and is equivalent to `envDetails.sources`.
+
+**Security note:** The `envDetails.variables` map contains actual values, which may include secrets. The `SyncResult` object should not be logged or serialized to external systems without filtering.
+
+**Inputs:** `EnvLoadResult` from `applyPrecedence()`
+**Outputs:** `SyncResult.envDetails`
+**No-op case:** When azure-venv is not configured, `envDetails` has all empty collections.
+**Error fallback case:** When sync fails with `failOnError=false`, `envDetails` has all empty collections.
+
+---
+
 ## 3. Non-Functional Requirements
 
 ### NFR-001: Cross-Platform Compatibility
@@ -476,3 +523,5 @@ The public API `initAzureVenv(options?: AzureVenvOptions): Promise<SyncResult>` 
 | FR-023 | Fixed manifest location | Plan 002 Phase 1 | config/types, config/validator, initialize |
 | FR-024 | Streaming downloads (large blobs) | Plan 002 Phase 2 | azure/client, sync/downloader |
 | FR-025 | Orphan files (NOT IN SCOPE) | Plan 002 Phase 5 | N/A (documentation only) |
+| FR-026 | File tree introspection | Plan 003 Phase 1-2 | introspection, types, initialize, watch/watcher |
+| FR-027 | Environment variable introspection | Plan 003 Phase 1-2 | types, initialize, watch/watcher |

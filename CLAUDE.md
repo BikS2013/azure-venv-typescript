@@ -25,14 +25,17 @@ src/
     precedence.ts       - Three-tier precedence resolver
   watch/
     watcher.ts          - BlobWatcher class + watchAzureVenv function
-    index.ts            - Watch module barrel exports
+  introspection/
+    manifest-reader.ts  - manifestToSyncedFiles() - flat file list from manifest
+    file-tree.ts        - buildFileTree() - hierarchical tree from flat list
+    index.ts            - Barrel exports
   cli/
     index.ts            - CLI tool (azure-venv sync/watch)
   errors/               - Custom error hierarchy
   logging/
     logger.ts           - Logger with SAS sanitization
   types/
-    index.ts            - Shared type re-exports (incl. watch types)
+    index.ts            - Shared types (SyncResult, SyncedFileInfo, FileTreeNode, EnvDetails, etc.)
 test_scripts/           - Unit and integration tests
 docs/
   design/               - Technical design and plans
@@ -68,7 +71,8 @@ docs/
         Test files are located in test_scripts/ directory.
         Tests cover: config parsing, validation, path security, env loading,
         precedence resolution, manifest management, logging, error classes,
-        streaming threshold routing, new config fields, and watcher.
+        streaming threshold routing, new config fields, watcher,
+        introspection (manifest-reader, file-tree, types).
 
         For watch mode: npx vitest
         For coverage: npx vitest run --coverage
@@ -159,3 +163,12 @@ docs/
 - **Manifest location**: Always at project root (.azure-venv-manifest.json), not configurable
 - **Orphan files**: NOT in scope for v1
 - **Streaming threshold**: Configurable via AZURE_VENV_MAX_BLOB_SIZE, default 100MB
+
+## Design Decisions (v0.3.0 - Introspection)
+
+- **File introspection**: SyncResult includes `syncedFiles` (flat list) and `fileTree` (hierarchical) built from sync manifest
+- **Env introspection**: SyncResult includes `envDetails` with variables, sources, and keys grouped by tier
+- **New module**: `src/introspection/` with `manifestToSyncedFiles()` and `buildFileTree()` utility functions
+- **Public exports**: `SyncedFileInfo`, `FileTreeNode`, `EnvDetails` types + `buildFileTree`, `manifestToSyncedFiles` functions
+- **No new config**: No additional environment variables required; data sourced from existing manifest and env result
+- **Security note**: `EnvDetails.variables` contains actual values; consumers should not log/serialize without filtering

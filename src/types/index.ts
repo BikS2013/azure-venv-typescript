@@ -49,6 +49,76 @@ export interface EnvLoadResult {
 }
 
 /**
+ * Information about a single file synced from Azure Blob Storage.
+ * Built from the sync manifest after sync completes.
+ */
+export interface SyncedFileInfo {
+  /** Relative path of the file within the application root (forward-slash normalized). */
+  readonly localPath: string;
+
+  /** Full blob name in Azure Blob Storage. */
+  readonly blobName: string;
+
+  /** File size in bytes. */
+  readonly size: number;
+
+  /** Last modified date in Azure (ISO 8601 string). */
+  readonly lastModified: string;
+
+  /** ETag of the blob at time of sync. */
+  readonly etag: string;
+}
+
+/**
+ * A node in the hierarchical file tree representation of synced files.
+ * Directories contain children; files are leaf nodes.
+ */
+export interface FileTreeNode {
+  /** File or directory name (segment only, not the full path). */
+  readonly name: string;
+
+  /** Whether this node represents a file or a directory. */
+  readonly type: 'file' | 'directory';
+
+  /** Relative path from the application root (forward-slash separated). */
+  readonly path: string;
+
+  /** Child nodes. Present and non-empty only for directory nodes. */
+  readonly children?: readonly FileTreeNode[];
+
+  /** File size in bytes. Present only for file nodes. */
+  readonly size?: number;
+
+  /** Full blob name in Azure Blob Storage. Present only for file nodes. */
+  readonly blobName?: string;
+}
+
+/**
+ * Full environment variable introspection data.
+ *
+ * SECURITY WARNING: The `variables` map contains actual values, which may
+ * include secrets (passwords, tokens, connection strings). The SyncResult
+ * object containing this data should not be logged or serialized to external
+ * systems without filtering sensitive keys.
+ */
+export interface EnvDetails {
+  /** Key-value map of all tracked environment variables (from all three tiers). */
+  readonly variables: Readonly<Record<string, string>>;
+
+  /** Source tier for each variable ('os' | 'remote' | 'local'). */
+  readonly sources: Readonly<Record<string, EnvSource>>;
+
+  /** Keys that came from the local .env file. */
+  readonly localKeys: readonly string[];
+
+  /** Keys that came from the remote .env file(s) synced from Azure. */
+  readonly remoteKeys: readonly string[];
+
+  /** OS environment keys that were preserved (not overridden by .env files). */
+  readonly osKeys: readonly string[];
+}
+
+/**
  * Result of a complete sync operation. Returned by initAzureVenv().
  */
 export interface SyncResult {
@@ -78,6 +148,15 @@ export interface SyncResult {
 
   /** Map of environment variable names to their source tier. */
   readonly envSources: Readonly<Record<string, EnvSource>>;
+
+  /** Flat list of all synced files, sorted by localPath. Built from the sync manifest. */
+  readonly syncedFiles: readonly SyncedFileInfo[];
+
+  /** Hierarchical tree of all synced files. Built from syncedFiles via buildFileTree(). */
+  readonly fileTree: readonly FileTreeNode[];
+
+  /** Full environment variable introspection data. */
+  readonly envDetails: EnvDetails;
 }
 
 /**
@@ -93,6 +172,15 @@ export const NO_OP_SYNC_RESULT: SyncResult = {
   duration: 0,
   remoteEnvLoaded: false,
   envSources: {},
+  syncedFiles: [],
+  fileTree: [],
+  envDetails: {
+    variables: {},
+    sources: {},
+    localKeys: [],
+    remoteKeys: [],
+    osKeys: [],
+  },
 } as const;
 
 /**

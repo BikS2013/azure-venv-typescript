@@ -21,6 +21,7 @@
 8. [Security Measures](#8-security-measures)
 9. [Cross-Module Dependency Map](#9-cross-module-dependency-map)
 10. [Implementation Notes for Parallel Agents](#10-implementation-notes-for-parallel-agents)
+12. [Design Addendum: v0.3.0 Introspection Features (FR-026, FR-027)](#12-design-addendum-v030-introspection-features-fr-026-fr-027)
 
 ---
 
@@ -3115,3 +3116,966 @@ src/
   types/
     index.ts                  # SyncResult, etc. (+ WatchResult, re-exports)
 ```
+
+---
+
+## 12. Design Addendum: v0.3.0 Introspection Features (FR-026, FR-027)
+
+**Date:** 2026-02-28
+**Plan Reference:** [plan-003-introspection-features.md](plan-003-introspection-features.md)
+**Codebase Analysis Reference:** [../reference/codebase-analysis-introspection-features.md](../reference/codebase-analysis-introspection-features.md)
+
+This addendum defines the technical design for two introspection features that allow the hosting application to inspect, after sync, (a) the tree of files that azure-venv synchronized, and (b) the environment variables that azure-venv introduced.
+
+### 12.1 Design Overview
+
+Both features extend the existing `SyncResult` interface with new required fields. The data for these fields is already computed internally during sync but was not previously exposed:
+
+- **File data** comes from the `SyncManifest.entries` (the ETag manifest written after sync).
+- **Environment variable data** comes from the `EnvLoadResult` returned by `applyPrecedence()`.
+
+No new configuration variables are introduced. No changes to `AzureVenvOptions` or `AzureVenvConfig` are required.
+
+### 12.2 New Types
+
+#### 12.2.1 `SyncedFileInfo` (New Interface in `src/types/index.ts`)
+
+**Insert after:** `EnvLoadResult` interface (after line 49)
+**Serena operation:** `insert_after_symbol` with name_path `EnvLoadResult`, relative_path `src/types/index.ts`
+
+```typescript
+/**
+ * Information about a single file synced from Azure Blob Storage.
+ * Built from the sync manifest after sync completes.
+ */
+export interface SyncedFileInfo {
+  /** Relative path of the file within the application root (forward-slash normalized). */
+  readonly localPath: string;
+
+  /** Full blob name in Azure Blob Storage. */
+  readonly blobName: string;
+
+  /** File size in bytes. */
+  readonly size: number;
+
+  /** Last modified date in Azure (ISO 8601 string). */
+  readonly lastModified: string;
+
+  /** ETag of the blob at time of sync. */
+  readonly etag: string;
+}
+```
+
+**Field mappings from `ManifestEntry`:**
+
+| SyncedFileInfo field | ManifestEntry source field | Transformation |
+|---|---|---|
+| `localPath` | `localPath` | Direct copy (already relative) |
+| `blobName` | `blobName` | Direct copy |
+| `size` | `contentLength` | Direct copy (renamed for clarity) |
+| `lastModified` | `lastModified` | Direct copy |
+| `etag` | `etag` | Direct copy |
+
+The `syncedAt` field from `ManifestEntry` is intentionally excluded from `SyncedFileInfo` because it is an internal bookkeeping timestamp, not a property of the synced file itself.
+
+#### 12.2.2 `FileTreeNode` (New Interface in `src/types/index.ts`)
+
+**Insert after:** `SyncedFileInfo` interface
+**Serena operation:** `insert_after_symbol` with name_path `SyncedFileInfo`, relative_path `src/types/index.ts`
+
+```typescript
+/**
+ * A node in the hierarchical file tree representation of synced files.
+ * Directories contain children; files are leaf nodes.
+ */
+export interface FileTreeNode {
+  /** File or directory name (segment only, not the full path). */
+  readonly name: string;
+
+  /** Whether this node represents a file or a directory. */
+  readonly type: 'file' | 'directory';
+
+  /** Relative path from the application root (forward-slash separated). */
+  readonly path: string;
+
+  /** Child nodes. Present and non-empty only for directory nodes. */
+  readonly children?: readonly FileTreeNode[];
+
+  /** File size in bytes. Present only for file nodes. */
+  readonly size?: number;
+
+  /** Full blob name in Azure Blob Storage. Present only for file nodes. */
+  readonly blobName?: string;
+}
+```
+
+#### 12.2.3 `EnvDetails` (New Interface in `src/types/index.ts`)
+
+**Insert after:** `FileTreeNode` interface
+**Serena operation:** `insert_after_symbol` with name_path `FileTreeNode`, relative_path `src/types/index.ts`
+
+```typescript
+/**
+ * Full environment variable introspection data.
+ *
+ * SECURITY WARNING: The `variables` map contains actual values, which may
+ * include secrets (passwords, tokens, connection strings). The SyncResult
+ * object containing this data should not be logged or serialized to external
+ * systems without filtering sensitive keys.
+ */
+export interface EnvDetails {
+  /** Key-value map of all tracked environment variables (from all three tiers). */
+  readonly variables: Readonly<Record<string, string>>;
+
+  /** Source tier for each variable ('os' | 'remote' | 'local'). */
+  readonly sources: Readonly<Record<string, EnvSource>>;
+
+  /** Keys that came from the local .env file. */
+  readonly localKeys: readonly string[];
+
+  /** Keys that came from the remote .env file(s) synced from Azure. */
+  readonly remoteKeys: readonly string[];
+
+  /** OS environment keys that were preserved (not overridden by .env files). */
+  readonly osKeys: readonly string[];
+}
+```
+
+**Relationship to `EnvLoadResult`:** `EnvDetails` is structurally identical to `EnvLoadResult`. The reason for a separate type is that `EnvLoadResult` is an internal type used within the env module, while `EnvDetails` is part of the public API surface exposed through `SyncResult`. If `EnvLoadResult` evolves internally (e.g., adds internal-only fields), the public contract remains stable.
+
+### 12.3 Modified Types
+
+#### 12.3.1 `SyncResult` Interface Extension
+
+**File:** `src/types/index.ts`
+**Symbol:** `SyncResult` (lines 53-81)
+**Serena operation:** `replace_symbol_body` with name_path `SyncResult`, relative_path `src/types/index.ts`
+
+**BEFORE (current code):**
+```typescript
+export interface SyncResult {
+  /** Whether Azure sync was attempted. False if AZURE_VENV was not configured. */
+  readonly attempted: boolean;
+
+  /** Total number of blobs found in Azure Blob Storage. */
+  readonly totalBlobs: number;
+
+  /** Number of blobs successfully downloaded. */
+  readonly downloaded: number;
+
+  /** Number of blobs skipped (ETag matched, no change). */
+  readonly skipped: number;
+
+  /** Number of blobs that failed to download. */
+  readonly failed: number;
+
+  /** Names of blobs that failed to download. */
+  readonly failedBlobs: readonly string[];
+
+  /** Total sync duration in milliseconds. */
+  readonly duration: number;
+
+  /** Whether a remote .env file was found and loaded. */
+  readonly remoteEnvLoaded: boolean;
+
+  /** Map of environment variable names to their source tier. */
+  readonly envSources: Readonly<Record<string, EnvSource>>;
+}
+```
+
+**AFTER (new code):**
+```typescript
+export interface SyncResult {
+  /** Whether Azure sync was attempted. False if AZURE_VENV was not configured. */
+  readonly attempted: boolean;
+
+  /** Total number of blobs found in Azure Blob Storage. */
+  readonly totalBlobs: number;
+
+  /** Number of blobs successfully downloaded. */
+  readonly downloaded: number;
+
+  /** Number of blobs skipped (ETag matched, no change). */
+  readonly skipped: number;
+
+  /** Number of blobs that failed to download. */
+  readonly failed: number;
+
+  /** Names of blobs that failed to download. */
+  readonly failedBlobs: readonly string[];
+
+  /** Total sync duration in milliseconds. */
+  readonly duration: number;
+
+  /** Whether a remote .env file was found and loaded. */
+  readonly remoteEnvLoaded: boolean;
+
+  /** Map of environment variable names to their source tier. */
+  readonly envSources: Readonly<Record<string, EnvSource>>;
+
+  /** Flat list of all synced files, sorted by localPath. Built from the sync manifest. */
+  readonly syncedFiles: readonly SyncedFileInfo[];
+
+  /** Hierarchical tree of all synced files. Built from syncedFiles via buildFileTree(). */
+  readonly fileTree: readonly FileTreeNode[];
+
+  /** Full environment variable introspection data. */
+  readonly envDetails: EnvDetails;
+}
+```
+
+**Impact on referencing symbols:** Adding required fields to `SyncResult` will cause compile errors at all 7 construction sites (6 inline object literals + `NO_OP_SYNC_RESULT`). This is intentional -- TypeScript will enforce that every site is updated.
+
+#### 12.3.2 `NO_OP_SYNC_RESULT` Constant Update
+
+**File:** `src/types/index.ts`
+**Symbol:** `NO_OP_SYNC_RESULT` (lines 85-96)
+**Serena operation:** `replace_symbol_body` with name_path `NO_OP_SYNC_RESULT`, relative_path `src/types/index.ts`
+
+**BEFORE (current code):**
+```typescript
+NO_OP_SYNC_RESULT: SyncResult = {
+  attempted: false,
+  totalBlobs: 0,
+  downloaded: 0,
+  skipped: 0,
+  failed: 0,
+  failedBlobs: [],
+  duration: 0,
+  remoteEnvLoaded: false,
+  envSources: {},
+} as const
+```
+
+**AFTER (new code):**
+```typescript
+NO_OP_SYNC_RESULT: SyncResult = {
+  attempted: false,
+  totalBlobs: 0,
+  downloaded: 0,
+  skipped: 0,
+  failed: 0,
+  failedBlobs: [],
+  duration: 0,
+  remoteEnvLoaded: false,
+  envSources: {},
+  syncedFiles: [],
+  fileTree: [],
+  envDetails: {
+    variables: {},
+    sources: {},
+    localKeys: [],
+    remoteKeys: [],
+    osKeys: [],
+  },
+} as const
+```
+
+### 12.4 New Module: `src/introspection/`
+
+This module contains utility functions for transforming internal data structures into the public introspection types. It introduces no new dependencies.
+
+#### 12.4.1 `src/introspection/manifest-reader.ts` (New File)
+
+**Purpose:** Convert `SyncManifest.entries` to a flat `SyncedFileInfo[]` array.
+
+```typescript
+import { SyncManifest, SyncedFileInfo } from '../types/index.js';
+
+/**
+ * Convert manifest entries to a flat, sorted list of SyncedFileInfo objects.
+ *
+ * @param manifest - The sync manifest after sync completes.
+ * @returns Flat list of SyncedFileInfo, sorted alphabetically by localPath.
+ */
+export function manifestToSyncedFiles(manifest: SyncManifest): SyncedFileInfo[] {
+  const entries = Object.values(manifest.entries);
+
+  return entries
+    .map((entry) => ({
+      localPath: entry.localPath.replace(/\\/g, '/'),
+      blobName: entry.blobName,
+      size: entry.contentLength,
+      lastModified: entry.lastModified,
+      etag: entry.etag,
+    }))
+    .sort((a, b) => a.localPath.localeCompare(b.localPath));
+}
+```
+
+**Key decisions:**
+- Path separators are normalized to forward slashes for consistency across platforms.
+- Output is sorted alphabetically by `localPath` for deterministic ordering.
+- The `ManifestEntry.syncedAt` field is intentionally excluded (internal bookkeeping).
+- The `ManifestEntry.contentLength` is mapped to `SyncedFileInfo.size` for a cleaner public API name.
+
+#### 12.4.2 `src/introspection/file-tree.ts` (New File)
+
+**Purpose:** Build a hierarchical `FileTreeNode[]` tree from a flat `SyncedFileInfo[]` array.
+
+```typescript
+import { SyncedFileInfo, FileTreeNode } from '../types/index.js';
+
+/**
+ * Internal mutable node used during tree construction.
+ */
+interface MutableTreeNode {
+  name: string;
+  type: 'file' | 'directory';
+  path: string;
+  children: Map<string, MutableTreeNode>;
+  size?: number;
+  blobName?: string;
+}
+
+/**
+ * Build a hierarchical file tree from a flat list of synced files.
+ *
+ * The returned array contains root-level nodes. Directories are sorted
+ * before files at each level; within each group, nodes are sorted
+ * alphabetically by name.
+ *
+ * @param syncedFiles - Flat list of synced file info objects.
+ * @returns Array of root-level FileTreeNode objects.
+ */
+export function buildFileTree(syncedFiles: readonly SyncedFileInfo[]): FileTreeNode[] {
+  // Root is a virtual directory node whose children become the returned array
+  const root: MutableTreeNode = {
+    name: '',
+    type: 'directory',
+    path: '',
+    children: new Map(),
+  };
+
+  for (const file of syncedFiles) {
+    const segments = file.localPath.replace(/\\/g, '/').split('/');
+    let current = root;
+
+    // Create/traverse intermediate directory nodes
+    for (let i = 0; i < segments.length - 1; i++) {
+      const segment = segments[i];
+      const dirPath = segments.slice(0, i + 1).join('/');
+
+      if (!current.children.has(segment)) {
+        current.children.set(segment, {
+          name: segment,
+          type: 'directory',
+          path: dirPath,
+          children: new Map(),
+        });
+      }
+      current = current.children.get(segment)!;
+    }
+
+    // Create the file leaf node
+    const fileName = segments[segments.length - 1];
+    current.children.set(fileName, {
+      name: fileName,
+      type: 'file',
+      path: file.localPath.replace(/\\/g, '/'),
+      children: new Map(),
+      size: file.size,
+      blobName: file.blobName,
+    });
+  }
+
+  return convertToReadonly(root).children ?? [];
+}
+
+/**
+ * Recursively convert a MutableTreeNode to a readonly FileTreeNode.
+ * Sorts children: directories first, then files, alphabetically within each group.
+ */
+function convertToReadonly(node: MutableTreeNode): FileTreeNode {
+  if (node.type === 'file') {
+    return {
+      name: node.name,
+      type: 'file',
+      path: node.path,
+      size: node.size,
+      blobName: node.blobName,
+    };
+  }
+
+  const childArray = Array.from(node.children.values());
+
+  // Sort: directories first, then files; alphabetical within each group
+  childArray.sort((a, b) => {
+    if (a.type !== b.type) {
+      return a.type === 'directory' ? -1 : 1;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  const children = childArray.map(convertToReadonly);
+
+  return {
+    name: node.name,
+    type: 'directory',
+    path: node.path,
+    ...(children.length > 0 ? { children } : {}),
+  };
+}
+```
+
+**Algorithm complexity:** O(N * D) where N is the number of files and D is the maximum directory depth. For typical azure-venv use cases (tens to hundreds of files), this is negligible.
+
+**Sorting contract:** At each directory level, children appear in this order:
+1. Directory nodes, sorted alphabetically by `name`
+2. File nodes, sorted alphabetically by `name`
+
+#### 12.4.3 `src/introspection/index.ts` (New File -- Barrel Exports)
+
+```typescript
+export { manifestToSyncedFiles } from './manifest-reader.js';
+export { buildFileTree } from './file-tree.js';
+```
+
+### 12.5 Modified Functions -- Orchestrator Changes
+
+All SyncResult construction sites must be updated to include the three new fields. There are 7 total sites: 3 in `initAzureVenv`, 3 in `watchAzureVenv`, and 1 in `NO_OP_SYNC_RESULT` (covered in 12.3.2).
+
+#### 12.5.1 `initAzureVenv()` -- Success Path
+
+**File:** `src/initialize.ts`
+**Symbol:** `initAzureVenv` (lines 43-200)
+**Serena operation:** `replace_symbol_body` with name_path `initAzureVenv`, relative_path `src/initialize.ts`
+
+**New imports to add at top of file:**
+```typescript
+import { manifestToSyncedFiles } from './introspection/manifest-reader.js';
+import { buildFileTree } from './introspection/file-tree.js';
+import type { EnvDetails } from './types/index.js';
+```
+
+**Changes within the function body (success path, after `syncEngine.syncFiles(config)` at approximately line 132):**
+
+Insert after `const syncStats = await syncEngine.syncFiles(config);` and before `const duration = Date.now() - startTime;`:
+
+```typescript
+    // Build introspection data from manifest and env result
+    const finalManifest = await manifestManager.load();
+    const syncedFiles = manifestToSyncedFiles(finalManifest);
+    const fileTree = buildFileTree(syncedFiles);
+
+    const envDetails: EnvDetails = {
+      variables: envResult.variables,
+      sources: envResult.sources,
+      localKeys: [...envResult.localKeys],
+      remoteKeys: [...envResult.remoteKeys],
+      osKeys: [...envResult.osKeys],
+    };
+```
+
+Then update the `SyncResult` object literal (approximately line 134) to include:
+
+```typescript
+    const result: SyncResult = {
+      attempted: true,
+      totalBlobs: syncStats.totalBlobs,
+      downloaded: syncStats.downloaded,
+      skipped: syncStats.skipped,
+      failed: syncStats.failed,
+      failedBlobs: syncStats.failedBlobs,
+      duration,
+      remoteEnvLoaded,
+      envSources: envResult.sources,
+      syncedFiles,
+      fileTree,
+      envDetails,
+    };
+```
+
+**Why `manifestManager.load()` is called again:** The `SyncEngine.syncFiles()` method saves the updated manifest internally after all downloads complete. Rather than modifying the SyncEngine's return type (which would be a larger refactor), we simply reload the manifest. This is a lightweight filesystem read of a small JSON file.
+
+**Why `envResult` arrays are spread:** `[...envResult.localKeys]` creates a new array rather than sharing the reference. This ensures the returned `EnvDetails` is a snapshot that cannot be mutated by internal code changes later.
+
+#### 12.5.2 `initAzureVenv()` -- AzureVenvError Fallback
+
+**File:** `src/initialize.ts`
+**Location:** First catch block (approximately lines 165-178), inside `if (error instanceof AzureVenvError)` and `config.failOnError` is false.
+
+**BEFORE (current return statement):**
+```typescript
+      return {
+        attempted: true,
+        totalBlobs: 0,
+        downloaded: 0,
+        skipped: 0,
+        failed: 0,
+        failedBlobs: [],
+        duration: Date.now() - startTime,
+        remoteEnvLoaded: false,
+        envSources: {},
+      };
+```
+
+**AFTER:**
+```typescript
+      return {
+        attempted: true,
+        totalBlobs: 0,
+        downloaded: 0,
+        skipped: 0,
+        failed: 0,
+        failedBlobs: [],
+        duration: Date.now() - startTime,
+        remoteEnvLoaded: false,
+        envSources: {},
+        syncedFiles: [],
+        fileTree: [],
+        envDetails: {
+          variables: {},
+          sources: {},
+          localKeys: [],
+          remoteKeys: [],
+          osKeys: [],
+        },
+      };
+```
+
+**Rationale for empty defaults in error paths:** When sync fails, no manifest data and no env data are available. Empty arrays and objects are the correct degraded state.
+
+#### 12.5.3 `initAzureVenv()` -- Unknown Error Fallback
+
+**File:** `src/initialize.ts`
+**Location:** Second catch block (approximately lines 189-199), the final `return` for unknown errors with `failOnError=false`.
+
+**Change:** Identical to 12.5.2 -- add the same three fields with empty defaults.
+
+#### 12.5.4 `watchAzureVenv()` -- Success Path
+
+**File:** `src/watch/watcher.ts`
+**Symbol:** `watchAzureVenv` (lines 322-521)
+**Serena operation:** `replace_symbol_body` with name_path `watchAzureVenv`, relative_path `src/watch/watcher.ts`
+
+**New imports to add at top of file:**
+```typescript
+import { manifestToSyncedFiles } from '../introspection/manifest-reader.js';
+import { buildFileTree } from '../introspection/file-tree.js';
+import type { EnvDetails } from '../types/index.js';
+```
+
+**Changes within the function body (success path):**
+
+Insert after `const syncStats = await syncEngine.syncFiles(config);` (approximately line 418) and before building `initialSync`:
+
+```typescript
+    // Build introspection data from manifest and env result
+    const finalManifest = await manifestManager.load();
+    const syncedFiles = manifestToSyncedFiles(finalManifest);
+    const fileTree = buildFileTree(syncedFiles);
+
+    const envDetails: EnvDetails = {
+      variables: envResult.variables,
+      sources: envResult.sources,
+      localKeys: [...envResult.localKeys],
+      remoteKeys: [...envResult.remoteKeys],
+      osKeys: [...envResult.osKeys],
+    };
+```
+
+Then update the `initialSync` object literal (approximately line 422) to include:
+
+```typescript
+    const initialSync: SyncResult = {
+      attempted: true,
+      totalBlobs: syncStats.totalBlobs,
+      downloaded: syncStats.downloaded,
+      skipped: syncStats.skipped,
+      failed: syncStats.failed,
+      failedBlobs: syncStats.failedBlobs,
+      duration,
+      remoteEnvLoaded,
+      envSources: envResult.sources,
+      syncedFiles,
+      fileTree,
+      envDetails,
+    };
+```
+
+#### 12.5.5 `watchAzureVenv()` -- AzureVenvError Fallback
+
+**File:** `src/watch/watcher.ts`
+**Location:** First catch block (approximately lines 477-487), inside `if (error instanceof AzureVenvError)` with `failOnError=false`.
+
+**BEFORE (current `initialSync` in return):**
+```typescript
+        initialSync: {
+          attempted: true,
+          totalBlobs: 0,
+          downloaded: 0,
+          skipped: 0,
+          failed: 0,
+          failedBlobs: [],
+          duration: Date.now() - startTime,
+          remoteEnvLoaded: false,
+          envSources: {},
+        },
+```
+
+**AFTER:**
+```typescript
+        initialSync: {
+          attempted: true,
+          totalBlobs: 0,
+          downloaded: 0,
+          skipped: 0,
+          failed: 0,
+          failedBlobs: [],
+          duration: Date.now() - startTime,
+          remoteEnvLoaded: false,
+          envSources: {},
+          syncedFiles: [],
+          fileTree: [],
+          envDetails: {
+            variables: {},
+            sources: {},
+            localKeys: [],
+            remoteKeys: [],
+            osKeys: [],
+          },
+        },
+```
+
+#### 12.5.6 `watchAzureVenv()` -- Unknown Error Fallback
+
+**File:** `src/watch/watcher.ts`
+**Location:** Second catch block (approximately lines 505-515), the final return for unknown errors.
+
+**Change:** Identical to 12.5.5 -- add the same three fields with empty defaults to the `initialSync` object.
+
+### 12.6 Updated Exports (`src/index.ts`)
+
+**File:** `src/index.ts`
+**Serena operations:**
+1. Add new type exports to the existing `export type` statement on line 8
+2. Add new function exports from the introspection module
+
+**BEFORE (current, lines 7-8):**
+```typescript
+// Result types
+export type { SyncResult, SyncManifest, ManifestEntry, EnvSource, EnvRecord, EnvLoadResult } from './types/index.js';
+```
+
+**AFTER:**
+```typescript
+// Result types
+export type { SyncResult, SyncManifest, ManifestEntry, EnvSource, EnvRecord, EnvLoadResult, SyncedFileInfo, FileTreeNode, EnvDetails } from './types/index.js';
+```
+
+**New export block to add (after the watch mode exports, approximately after line 12):**
+
+```typescript
+// Introspection utilities
+export { buildFileTree } from './introspection/file-tree.js';
+export { manifestToSyncedFiles } from './introspection/manifest-reader.js';
+```
+
+### 12.7 CLI Changes (`src/cli/index.ts`)
+
+**File:** `src/cli/index.ts`
+**Symbol:** `printSyncSummary` (lines 16-40)
+**Serena operation:** `replace_symbol_body` with name_path `printSyncSummary`, relative_path `src/cli/index.ts`
+
+**BEFORE (current code):**
+```typescript
+function printSyncSummary(result: SyncResult): void {
+  console.log('');
+  console.log('=== Sync Result ===');
+  console.log(`  Attempted:      ${result.attempted}`);
+  console.log(`  Total blobs:    ${result.totalBlobs}`);
+  console.log(`  Downloaded:     ${result.downloaded}`);
+  console.log(`  Skipped:        ${result.skipped}`);
+  console.log(`  Failed:         ${result.failed}`);
+  console.log(`  Duration:       ${result.duration}ms`);
+  console.log(`  Remote .env:    ${result.remoteEnvLoaded ? 'loaded' : 'not loaded'}`);
+
+  if (result.failedBlobs.length > 0) {
+    console.log(`  Failed blobs:`);
+    for (const blob of result.failedBlobs) {
+      console.log(`    - ${blob}`);
+    }
+  }
+
+  const envSourceKeys = Object.keys(result.envSources);
+  if (envSourceKeys.length > 0) {
+    console.log(`  Env sources:    ${envSourceKeys.length} variable(s) tracked`);
+  }
+
+  console.log('');
+}
+```
+
+**AFTER (new code):**
+```typescript
+function printSyncSummary(result: SyncResult): void {
+  console.log('');
+  console.log('=== Sync Result ===');
+  console.log(`  Attempted:      ${result.attempted}`);
+  console.log(`  Total blobs:    ${result.totalBlobs}`);
+  console.log(`  Downloaded:     ${result.downloaded}`);
+  console.log(`  Skipped:        ${result.skipped}`);
+  console.log(`  Failed:         ${result.failed}`);
+  console.log(`  Duration:       ${result.duration}ms`);
+  console.log(`  Remote .env:    ${result.remoteEnvLoaded ? 'loaded' : 'not loaded'}`);
+
+  if (result.failedBlobs.length > 0) {
+    console.log(`  Failed blobs:`);
+    for (const blob of result.failedBlobs) {
+      console.log(`    - ${blob}`);
+    }
+  }
+
+  const envSourceKeys = Object.keys(result.envSources);
+  if (envSourceKeys.length > 0) {
+    console.log(`  Env sources:    ${envSourceKeys.length} variable(s) tracked`);
+  }
+
+  // Synced files section
+  if (result.syncedFiles.length > 0) {
+    console.log('');
+    console.log('=== Synced Files ===');
+    console.log(`  Total files:    ${result.syncedFiles.length}`);
+    for (const file of result.syncedFiles) {
+      console.log(`  ${file.localPath} (${file.size} bytes)`);
+    }
+  }
+
+  // File tree section
+  if (result.fileTree.length > 0) {
+    console.log('');
+    console.log('=== File Tree ===');
+    printFileTreeNodes(result.fileTree, '  ');
+  }
+
+  // Environment variables section
+  if (result.envDetails.localKeys.length > 0 || result.envDetails.remoteKeys.length > 0 || result.envDetails.osKeys.length > 0) {
+    console.log('');
+    console.log('=== Environment Variables ===');
+    const totalVars = Object.keys(result.envDetails.variables).length;
+    console.log(`  Total variables: ${totalVars}`);
+    for (const [name, value] of Object.entries(result.envDetails.variables)) {
+      const source = result.envDetails.sources[name] ?? 'unknown';
+      console.log(`  ${name} = ${value} [source: ${source}]`);
+    }
+  }
+
+  console.log('');
+}
+```
+
+**New helper function (insert after `printSyncSummary`):**
+
+**Serena operation:** `insert_after_symbol` with name_path `printSyncSummary`, relative_path `src/cli/index.ts`
+
+```typescript
+/**
+ * Recursively print file tree nodes with indentation.
+ * @param nodes - Array of FileTreeNode to print.
+ * @param indent - Current indentation string.
+ */
+function printFileTreeNodes(nodes: readonly FileTreeNode[], indent: string): void {
+  for (const node of nodes) {
+    if (node.type === 'directory') {
+      console.log(`${indent}${node.name}/`);
+      if (node.children) {
+        printFileTreeNodes(node.children, indent + '  ');
+      }
+    } else {
+      console.log(`${indent}${node.name} (${node.size ?? 0} bytes)`);
+    }
+  }
+}
+```
+
+**Import addition required:** Add `FileTreeNode` to the imports in `src/cli/index.ts`. The existing import from `../types/index.js` or wherever `SyncResult` is imported must also include `FileTreeNode`.
+
+### 12.8 Data Flow Diagrams
+
+#### 12.8.1 File Tree Data Flow
+
+```
+SyncEngine.syncFiles(config)
+    |
+    |--> internally saves manifest via ManifestManager.save()
+    |
+    V
+manifestManager.load()                          [reload saved manifest]
+    |
+    V
+manifestToSyncedFiles(manifest)                  [ManifestEntry[] -> SyncedFileInfo[]]
+    |
+    V
+buildFileTree(syncedFiles)                       [SyncedFileInfo[] -> FileTreeNode[]]
+    |
+    V
+SyncResult.syncedFiles + SyncResult.fileTree     [exposed to caller]
+```
+
+#### 12.8.2 Environment Variable Data Flow
+
+```
+applyPrecedence(osEnvSnapshot, localEnv, remoteEnv, logger)
+    |
+    V
+envResult: EnvLoadResult                         [already computed, was partially discarded]
+    |
+    V
+EnvDetails {                                     [copy relevant fields]
+  variables: envResult.variables,
+  sources: envResult.sources,
+  localKeys: [...envResult.localKeys],
+  remoteKeys: [...envResult.remoteKeys],
+  osKeys: [...envResult.osKeys],
+}
+    |
+    V
+SyncResult.envDetails                            [exposed to caller]
+SyncResult.envSources = envResult.sources         [retained for backward compatibility]
+```
+
+### 12.9 Watch Mode Scope
+
+The `BlobWatcher.poll()` method (lines 141-304 of `src/watch/watcher.ts`) does NOT construct a `SyncResult` and does NOT need to be modified. Introspection data is only available from the **initial sync** via `WatchResult.initialSync`.
+
+If a consumer needs updated file/env data after watch polls, they can:
+1. Re-read the manifest file from disk (`{rootDir}/.azure-venv-manifest.json`)
+2. Inspect `process.env` directly for updated environment variables
+3. Call `manifestToSyncedFiles()` and `buildFileTree()` on the loaded manifest
+
+Extending `poll()` to return introspection data is explicitly **out of scope** for this plan.
+
+### 12.10 Module Structure Update (v0.3.0)
+
+```
+src/
+  index.ts                    # Public API exports (+ SyncedFileInfo, FileTreeNode, EnvDetails, buildFileTree, manifestToSyncedFiles)
+  initialize.ts               # initAzureVenv (MODIFIED: populate new SyncResult fields)
+  introspection/              # NEW MODULE
+    index.ts                  # Barrel exports
+    file-tree.ts              # buildFileTree() utility
+    manifest-reader.ts        # manifestToSyncedFiles() utility
+  config/                     # UNCHANGED
+  azure/                      # UNCHANGED
+  sync/                       # UNCHANGED
+  env/                        # UNCHANGED
+  watch/
+    watcher.ts                # watchAzureVenv (MODIFIED: populate new SyncResult fields)
+    index.ts                  # UNCHANGED
+  cli/
+    index.ts                  # printSyncSummary (MODIFIED: display new sections) + printFileTreeNodes (NEW)
+  errors/                     # UNCHANGED
+  logging/                    # UNCHANGED
+  types/
+    index.ts                  # SyncResult (MODIFIED), NO_OP_SYNC_RESULT (MODIFIED), + 3 new interfaces
+```
+
+### 12.11 Cross-Module Dependency Map (v0.3.0 Additions)
+
+```
+src/introspection/manifest-reader.ts
+  imports: src/types/index.ts (SyncManifest, SyncedFileInfo)
+  imported by: src/initialize.ts, src/watch/watcher.ts, src/index.ts
+
+src/introspection/file-tree.ts
+  imports: src/types/index.ts (SyncedFileInfo, FileTreeNode)
+  imported by: src/initialize.ts, src/watch/watcher.ts, src/index.ts
+
+src/introspection/index.ts
+  re-exports: manifest-reader.ts, file-tree.ts
+  imported by: (optional, consumers may import directly)
+
+src/types/index.ts
+  new exports: SyncedFileInfo, FileTreeNode, EnvDetails
+  SyncResult: 3 new fields referencing the new types
+  NO_OP_SYNC_RESULT: updated with empty defaults
+
+src/initialize.ts
+  new imports: manifestToSyncedFiles, buildFileTree, EnvDetails
+  existing import ManifestManager: already present (used for manifestManager.load())
+
+src/watch/watcher.ts
+  new imports: manifestToSyncedFiles, buildFileTree, EnvDetails
+  existing import ManifestManager: already present
+
+src/cli/index.ts
+  new imports: FileTreeNode (for printFileTreeNodes parameter type)
+```
+
+### 12.12 Complete File Change Summary
+
+| File | Action | Nature of Change |
+|---|---|---|
+| `src/types/index.ts` | MODIFY | Add `SyncedFileInfo`, `FileTreeNode`, `EnvDetails` interfaces; extend `SyncResult`; update `NO_OP_SYNC_RESULT` |
+| `src/introspection/file-tree.ts` | CREATE | `buildFileTree()` utility function |
+| `src/introspection/manifest-reader.ts` | CREATE | `manifestToSyncedFiles()` utility function |
+| `src/introspection/index.ts` | CREATE | Barrel exports |
+| `src/initialize.ts` | MODIFY | Add imports; populate `syncedFiles`, `fileTree`, `envDetails` in 3 SyncResult construction sites |
+| `src/watch/watcher.ts` | MODIFY | Add imports; populate `syncedFiles`, `fileTree`, `envDetails` in 3 SyncResult construction sites |
+| `src/cli/index.ts` | MODIFY | Extend `printSyncSummary()` output; add `printFileTreeNodes()` helper |
+| `src/index.ts` | MODIFY | Export `SyncedFileInfo`, `FileTreeNode`, `EnvDetails` types + `buildFileTree`, `manifestToSyncedFiles` functions |
+| `test_scripts/file-tree.test.ts` | CREATE | Unit tests for `buildFileTree()` |
+| `test_scripts/manifest-reader.test.ts` | CREATE | Unit tests for `manifestToSyncedFiles()` |
+| `test_scripts/introspection-integration.test.ts` | CREATE | Integration tests for new SyncResult fields |
+| `test_scripts/watcher.test.ts` | MODIFY | Update any mock SyncResult objects to include new fields |
+
+**Total:** 8 files modified, 6 files created.
+
+### 12.13 Verification Criteria
+
+#### 12.13.1 Type-Level Verification
+
+| Criterion | Command | Expected |
+|---|---|---|
+| All types compile | `npx tsc --noEmit` | 0 errors |
+| New types are importable | Import test in `introspection-integration.test.ts` | Compiles and passes |
+| `NO_OP_SYNC_RESULT` satisfies `SyncResult` | Type assertion in test | Compiles |
+| All 7 SyncResult construction sites updated | `npx tsc --noEmit` | 0 errors (any missed site = compile error) |
+
+#### 12.13.2 Unit Test Verification -- `buildFileTree()`
+
+| Test Case | Input | Expected Output |
+|---|---|---|
+| Empty input | `[]` | `[]` |
+| Single root file | `[{localPath: 'app.json', ...}]` | `[{name: 'app.json', type: 'file', path: 'app.json', size: ..., blobName: ...}]` |
+| Single nested file | `[{localPath: 'config/db.json', ...}]` | `[{name: 'config', type: 'directory', path: 'config', children: [{name: 'db.json', type: 'file', ...}]}]` |
+| Multiple files same dir | 2 files in `config/` | 1 directory node with 2 file children |
+| Deep nesting | `a/b/c/file.txt` | 3 nested directory nodes + 1 file leaf |
+| Sort order | Mix of dirs and files at root | Directories first, then files, each alphabetical |
+| Multiple root dirs | Files in `config/` and `scripts/` | 2 root directory nodes, sorted |
+| Backslash normalization | `config\\db.json` | Normalized to `config/db.json` |
+
+#### 12.13.3 Unit Test Verification -- `manifestToSyncedFiles()`
+
+| Test Case | Input | Expected Output |
+|---|---|---|
+| Empty manifest | `{ entries: {} }` | `[]` |
+| Single entry | 1 ManifestEntry | 1 SyncedFileInfo with correct field mapping |
+| Multiple entries | 3 ManifestEntry objects | 3 SyncedFileInfo sorted by localPath |
+| Field mapping | ManifestEntry with `contentLength: 1024` | SyncedFileInfo with `size: 1024` |
+| Path normalization | ManifestEntry with backslash `localPath` | SyncedFileInfo with forward-slash `localPath` |
+
+#### 12.13.4 Integration Verification
+
+| Criterion | Method |
+|---|---|
+| `NO_OP_SYNC_RESULT` has empty `syncedFiles`, `fileTree`, `envDetails` | Direct assertion in test |
+| Full build succeeds | `npm run build` |
+| All existing tests pass | `npx vitest run` (119+ tests) |
+| CLI displays new sections when data present | Manual test or assertion on console output |
+
+### 12.14 Security Notes
+
+1. **`EnvDetails.variables` contains actual secret values.** The `SyncResult` object must not be logged, serialized, or sent to external monitoring systems without filtering sensitive keys. This matches the existing security posture -- these values are already in `process.env`.
+
+2. **`SyncedFileInfo.localPath` is relative.** It does not expose the absolute filesystem path of the application root. The existing `path-validator.ts` prevents path traversal, so `localPath` values are always within the application root.
+
+3. **No new network calls.** The introspection data is built entirely from data already in memory (manifest) or computed locally (file tree). No additional Azure API calls are made.
+
+### 12.15 Backward Compatibility
+
+- **For consumers reading `SyncResult`:** Fully backward compatible. New fields are additive. Existing code that reads `SyncResult.attempted`, `SyncResult.envSources`, etc. continues to work unchanged.
+- **For consumers constructing `SyncResult` manually:** Breaking change (new required fields). However, `SyncResult` is documented as a return type, not an input type. No external code should construct it. This is a minor version bump (v0.3.0).
+- **`envSources` vs `envDetails.sources`:** The existing `envSources` field is retained. It is equivalent to `envDetails.sources`. Consumers can migrate to `envDetails.sources` at their convenience. No deprecation is planned for v0.3.0.
+- **`WatchResult.initialSync`:** Automatically picks up the new fields since it wraps `SyncResult`. No change needed to the `WatchResult` interface.

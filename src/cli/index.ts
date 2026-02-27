@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { initAzureVenv } from '../initialize.js';
 import type { AzureVenvOptions, LogLevel, SyncMode } from '../config/types.js';
-import type { SyncResult } from '../types/index.js';
+import type { SyncResult, FileTreeNode } from '../types/index.js';
 
 const program = new Command();
 
@@ -37,7 +37,52 @@ function printSyncSummary(result: SyncResult): void {
     console.log(`  Env sources:    ${envSourceKeys.length} variable(s) tracked`);
   }
 
+  // Synced files list
+  if (result.syncedFiles.length > 0) {
+    console.log('');
+    console.log('=== Synced Files ===');
+    for (const file of result.syncedFiles) {
+      const sizeKB = (file.size / 1024).toFixed(1);
+      console.log(`  ${file.localPath} (${sizeKB} KB)`);
+    }
+  }
+
+  // File tree
+  if (result.fileTree.length > 0) {
+    console.log('');
+    console.log('=== File Tree ===');
+    printFileTreeNodes(result.fileTree, '  ');
+  }
+
+  // Environment variables
+  const envKeys = Object.keys(result.envDetails.variables);
+  if (envKeys.length > 0) {
+    console.log('');
+    console.log('=== Environment Variables ===');
+    for (const key of envKeys) {
+      const source = result.envDetails.sources[key] ?? 'unknown';
+      console.log(`  ${key} (source: ${source})`);
+    }
+  }
+
   console.log('');
+}
+
+/**
+ * Recursively print file tree nodes with indentation.
+ */
+function printFileTreeNodes(nodes: readonly FileTreeNode[], indent: string): void {
+  for (const node of nodes) {
+    if (node.type === 'directory') {
+      console.log(`${indent}${node.name}/`);
+      if (node.children) {
+        printFileTreeNodes(node.children, indent + '  ');
+      }
+    } else {
+      const sizeStr = node.size !== undefined ? ` (${(node.size / 1024).toFixed(1)} KB)` : '';
+      console.log(`${indent}${node.name}${sizeStr}`);
+    }
+  }
 }
 
 /**
