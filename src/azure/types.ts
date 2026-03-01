@@ -5,7 +5,7 @@ export interface BlobInfo {
   /** Full blob name including virtual directory path. Example: "config/prod/settings.json" */
   readonly name: string;
 
-  /** HTTP ETag for the blob. Used for incremental sync. Example: "0x8D..."  */
+  /** HTTP ETag for the blob. Used for change detection. Example: "0x8D..."  */
   readonly etag: string;
 
   /** Last modification timestamp of the blob. */
@@ -36,24 +36,4 @@ export interface BlobClientConfig {
 
   /** Per-operation timeout in milliseconds. Default: 30000. */
   readonly timeout: number;
-}
-
-/**
- * Result of a single blob download operation.
- */
-export interface BlobDownloadResult {
-  /** Blob name that was downloaded. */
-  readonly blobName: string;
-
-  /** Local file path where the blob was written. */
-  readonly localPath: string;
-
-  /** ETag of the downloaded blob. */
-  readonly etag: string;
-
-  /** Last modified timestamp of the downloaded blob. */
-  readonly lastModified: Date;
-
-  /** Content length in bytes. */
-  readonly contentLength: number;
 }

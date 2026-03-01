@@ -24,11 +24,6 @@ export interface ParsedBlobUrl {
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 /**
- * Sync mode determining whether to use the manifest for incremental sync or force full re-download.
- */
-export type SyncMode = 'full' | 'incremental';
-
-/**
  * Full validated configuration object produced by the config validator.
  * All required fields are guaranteed to be present and valid.
  * All optional fields have been resolved to their default values.
@@ -43,9 +38,6 @@ export interface AzureVenvConfig {
   /** ISO 8601 expiry date of the SAS token, if determinable. Parsed from AZURE_VENV_SAS_EXPIRY or the token's 'se' parameter. */
   readonly sasExpiry: Date | null;
 
-  /** Sync mode: 'full' re-downloads everything; 'incremental' uses ETag manifest. Default: 'full'. */
-  readonly syncMode: SyncMode;
-
   /** If true, any Azure error throws and prevents application startup. If false, errors are logged and app continues. Default: false. */
   readonly failOnError: boolean;
 
@@ -58,14 +50,11 @@ export interface AzureVenvConfig {
   /** Logging verbosity. Default: 'info'. */
   readonly logLevel: LogLevel;
 
-  /** Application root directory. Files are synced here. Default: process.cwd(). */
+  /** Application root directory. Used for local .env resolution. Default: process.cwd(). */
   readonly rootDir: string;
 
   /** Path to local .env file, relative to rootDir. Default: '.env'. */
   readonly envPath: string;
-
-  /** Maximum blob size in bytes before switching to streaming download. Default: 104857600 (100MB). */
-  readonly maxBlobSize: number;
 
   /** Polling interval in milliseconds for watch mode. Default: 30000 (30s). */
   readonly pollInterval: number;
@@ -86,9 +75,6 @@ export interface AzureVenvOptions {
   /** Path to local .env file relative to rootDir. Default: '.env' */
   envPath?: string;
 
-  /** Override sync mode. Default: reads AZURE_VENV_SYNC_MODE or 'full' */
-  syncMode?: SyncMode;
-
   /** Override fail-on-error behavior. Default: reads AZURE_VENV_FAIL_ON_ERROR or false */
   failOnError?: boolean;
 
@@ -100,9 +86,6 @@ export interface AzureVenvOptions {
 
   /** Override log level. Default: reads AZURE_VENV_LOG_LEVEL or 'info' */
   logLevel?: LogLevel;
-
-  /** Override max blob size for streaming threshold in bytes. Default: reads AZURE_VENV_MAX_BLOB_SIZE or 104857600 */
-  maxBlobSize?: number;
 
   /** Override polling interval in ms for watch mode. Default: reads AZURE_VENV_POLL_INTERVAL or 30000 */
   pollInterval?: number;
@@ -119,12 +102,10 @@ export interface RawEnvConfig {
   AZURE_VENV?: string;
   AZURE_VENV_SAS_TOKEN?: string;
   AZURE_VENV_SAS_EXPIRY?: string;
-  AZURE_VENV_SYNC_MODE?: string;
   AZURE_VENV_FAIL_ON_ERROR?: string;
   AZURE_VENV_CONCURRENCY?: string;
   AZURE_VENV_TIMEOUT?: string;
   AZURE_VENV_LOG_LEVEL?: string;
-  AZURE_VENV_MAX_BLOB_SIZE?: string;
   AZURE_VENV_POLL_INTERVAL?: string;
   AZURE_VENV_WATCH_ENABLED?: string;
 }

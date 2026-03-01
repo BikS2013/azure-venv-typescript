@@ -4,6 +4,7 @@ import type { AzureVenvConfig, AzureVenvOptions } from '../config/types.js';
 import { AzureVenvBlobClient } from '../azure/client.js';
 import type {
   SyncResult,
+  BlobContent,
   WatchChangeEvent,
   WatchOptions,
   WatchResult,
@@ -11,15 +12,11 @@ import type {
   EnvRecord,
   EnvDetails,
 } from '../types/index.js';
-import { manifestToSyncedFiles } from '../introspection/manifest-reader.js';
 import { buildFileTree } from '../introspection/file-tree.js';
 import { NO_OP_SYNC_RESULT } from '../types/index.js';
 import type { Logger } from '../logging/logger.js';
 import type { BlobInfo } from '../azure/types.js';
 import { SyncEngine } from '../sync/engine.js';
-import { ManifestManager } from '../sync/manifest.js';
-import { BlobDownloader } from '../sync/downloader.js';
-import { validateAndResolvePath, stripPrefix } from '../sync/path-validator.js';
 import { parseEnvBuffer } from '../env/loader.js';
 import { applyPrecedence } from '../env/precedence.js';
 import { validateConfig } from '../config/validator.js';
@@ -33,10 +30,46 @@ import {
 } from '../errors/index.js';
 
 /**
- * Watches Azure Blob Storage for changes and re-syncs files on a polling interval.
+ * Helper to strip a prefix from a blob name.
+ */
+function stripPrefix(blobName: string, prefix: string): string {
+  if (prefix === '' || !blobName.startsWith(prefix)) {
+    return blobName;
+  }
+  const rel = blobName.slice(prefix.length);
+  return rel === '' || rel === '/' ? blobName : rel;
+}
+
+/**
+ * Helper to build a failed SyncResult for error recovery paths.
+ */
+function failedSyncResult(startTime: number): SyncResult {
+  return {
+    attempted: true,
+    totalBlobs: 0,
+    downloaded: 0,
+    failed: 0,
+    failedBlobs: [],
+    duration: Date.now() - startTime,
+    remoteEnvLoaded: false,
+    envSources: {},
+    blobs: [],
+    fileTree: [],
+    envDetails: {
+      variables: {},
+      sources: {},
+      localKeys: [],
+      remoteKeys: [],
+      osKeys: [],
+    },
+  };
+}
+
+/**
+ * Watches Azure Blob Storage for changes and re-reads blobs into memory on a polling interval.
  *
- * The watcher compares blob ETags against the local manifest to detect
- * added or modified blobs, then downloads only the changed ones.
+ * The watcher compares blob ETags against the last known state to detect
+ * added or modified blobs, then downloads only the changed ones to memory.
  * If a remote .env file changes, it is re-downloaded, re-parsed,
  * and the three-tier precedence model is re-applied.
  */
@@ -48,6 +81,9 @@ export class BlobWatcher {
   private readonly localEnv: Readonly<EnvRecord>;
   private intervalId: NodeJS.Timeout | null = null;
   private abortController: AbortController;
+
+  /** Track known blob ETags for change detection. */
+  private knownEtags: Map<string, string> = new Map();
 
   /**
    * @param config - Validated Azure VENV configuration.
@@ -69,6 +105,16 @@ export class BlobWatcher {
     this.osEnvSnapshot = osEnvSnapshot;
     this.localEnv = localEnv;
     this.abortController = new AbortController();
+  }
+
+  /**
+   * Initialize the known ETags from the initial sync blobs.
+   */
+  setInitialEtags(blobs: readonly BlobContent[]): void {
+    this.knownEtags.clear();
+    for (const blob of blobs) {
+      this.knownEtags.set(blob.blobName, blob.etag);
+    }
   }
 
   /**
@@ -135,12 +181,11 @@ export class BlobWatcher {
   /**
    * Execute a single poll cycle:
    * 1. List all blobs with prefix
-   * 2. Load current manifest
-   * 3. Compare ETags to find added/modified blobs
-   * 4. Download changed blobs
-   * 5. If remote .env changed, re-download and re-apply precedence
-   * 6. Update manifest
-   * 7. Log summary of changes
+   * 2. Compare ETags to find added/modified blobs
+   * 3. Download changed blobs to memory
+   * 4. If remote .env changed, re-download and re-apply precedence
+   * 5. Update known ETags
+   * 6. Log summary of changes
    */
   private async poll(): Promise<void> {
     if (this.abortController.signal.aborted) {
@@ -151,18 +196,6 @@ export class BlobWatcher {
 
     try {
       const prefix = this.config.blobUrl.prefix;
-      const rootDir = this.config.rootDir;
-
-      // Create sync infrastructure for this poll cycle
-      const manifestPath = path.resolve(rootDir, '.azure-venv-manifest.json');
-      const manifestManager = new ManifestManager(manifestPath, this.logger);
-      const downloader = new BlobDownloader(
-        this.client,
-        { validateAndResolvePath },
-        this.logger,
-        this.config.concurrency,
-        this.config.maxBlobSize,
-      );
 
       // Step 1: List all blobs
       const allBlobs = await this.client.listBlobs(prefix);
@@ -171,22 +204,19 @@ export class BlobWatcher {
         return;
       }
 
-      // Step 2: Load current manifest
-      const manifest = await manifestManager.load();
-
-      // Step 3: Compare ETags - find added/modified blobs
+      // Step 2: Compare ETags - find added/modified blobs
       const envBlobName = prefix ? `${prefix}.env` : '.env';
       const changes: WatchChangeEvent[] = [];
       const changedFileBlobs: BlobInfo[] = [];
       let envChanged = false;
 
       for (const blob of allBlobs) {
-        const existingEntry = manifest.entries[blob.name];
+        const knownEtag = this.knownEtags.get(blob.name);
         let changeType: WatchChangeType | null = null;
 
-        if (!existingEntry) {
+        if (knownEtag === undefined) {
           changeType = 'added';
-        } else if (existingEntry.etag !== blob.etag) {
+        } else if (knownEtag !== blob.etag) {
           changeType = 'modified';
         }
 
@@ -197,18 +227,12 @@ export class BlobWatcher {
             changedFileBlobs.push(blob);
           }
 
-          let localPath: string;
-          try {
-            const relativePath = stripPrefix(blob.name, prefix);
-            localPath = path.resolve(rootDir, relativePath);
-          } catch {
-            localPath = blob.name;
-          }
+          const relativePath = stripPrefix(blob.name, prefix);
 
           changes.push({
             type: changeType,
             blobName: blob.name,
-            localPath,
+            relativePath,
             timestamp: new Date(),
           });
         }
@@ -225,44 +249,28 @@ export class BlobWatcher {
         return;
       }
 
-      // Step 4: Download changed file blobs
+      // Step 3: Download changed file blobs to memory
       if (changedFileBlobs.length > 0) {
-        const results = await downloader.downloadBatch(
-          changedFileBlobs,
-          rootDir,
-          prefix,
-        );
-
-        this.logger.info(
-          `Watch poll: downloaded ${results.length}/${changedFileBlobs.length} changed blob(s)`,
-        );
-
-        // Update manifest entries for successfully downloaded blobs
-        const updatedEntries = { ...manifest.entries };
-
-        for (const result of results) {
-          const matchingBlob = changedFileBlobs.find((b) => b.name === result.blobName);
-          if (matchingBlob) {
-            let relativePath: string;
-            try {
-              relativePath = stripPrefix(matchingBlob.name, prefix);
-            } catch {
-              relativePath = result.localPath;
-            }
-
-            const entry = manifestManager.createEntry(matchingBlob, relativePath);
-            updatedEntries[matchingBlob.name] = entry;
+        let readCount = 0;
+        for (const blob of changedFileBlobs) {
+          try {
+            await this.client.downloadToBuffer(blob.name);
+            // Update known ETag
+            this.knownEtags.set(blob.name, blob.etag);
+            readCount++;
+          } catch (error: unknown) {
+            this.logger.error(
+              `Watch poll: failed to read blob "${blob.name}": ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         }
 
-        // Save updated manifest
-        await manifestManager.save({
-          ...manifest,
-          entries: updatedEntries,
-        });
+        this.logger.info(
+          `Watch poll: read ${readCount}/${changedFileBlobs.length} changed blob(s) to memory`,
+        );
       }
 
-      // Step 5: If remote .env changed, re-download and re-apply precedence
+      // Step 4: If remote .env changed, re-download and re-apply precedence
       if (envChanged) {
         this.logger.info('Watch poll: remote .env changed, re-applying environment variables');
 
@@ -276,16 +284,10 @@ export class BlobWatcher {
 
           applyPrecedence(this.osEnvSnapshot, this.localEnv, remoteEnv, this.logger);
 
-          // Update manifest entry for .env blob
+          // Update known ETag for .env
           const envBlob = allBlobs.find((b) => b.name === envBlobName);
           if (envBlob) {
-            const currentManifest = await manifestManager.load();
-            const updatedEntries = { ...currentManifest.entries };
-            updatedEntries[envBlobName] = manifestManager.createEntry(envBlob, '.env');
-            await manifestManager.save({
-              ...currentManifest,
-              entries: updatedEntries,
-            });
+            this.knownEtags.set(envBlobName, envBlob.etag);
           }
         } catch (error: unknown) {
           this.logger.error(
@@ -294,7 +296,7 @@ export class BlobWatcher {
         }
       }
 
-      // Step 7: Log summary
+      // Step 6: Log summary
       const addedCount = changes.filter((c) => c.type === 'added').length;
       const modifiedCount = changes.filter((c) => c.type === 'modified').length;
       this.logger.info(
@@ -312,7 +314,7 @@ export class BlobWatcher {
  * Initialize azure-venv with watch mode support.
  *
  * This function performs the same initialization flow as initAzureVenv
- * (load local .env, validate config, create client, initial sync),
+ * (load local .env, validate config, create client, initial sync to memory),
  * and then optionally starts a BlobWatcher for continuous polling.
  *
  * @param options - Optional configuration and watch overrides.
@@ -321,7 +323,6 @@ export class BlobWatcher {
  * @throws ConfigurationError if required config is partially present or invalid.
  * @throws AuthenticationError if SAS token is expired or authentication fails (when failOnError: true).
  * @throws AzureConnectionError if Azure is unreachable (when failOnError: true).
- * @throws SyncError if filesystem operations fail critically.
  */
 export async function watchAzureVenv(
   options?: AzureVenvOptions & WatchOptions,
@@ -372,7 +373,7 @@ export async function watchAzureVenv(
   logger.info('Azure VENV configured, starting initial sync');
   logger.debug(`Blob URL: ${config.blobUrl.accountUrl}/${config.blobUrl.containerName}`);
   logger.debug(`Prefix: "${config.blobUrl.prefix}"`);
-  logger.debug(`Sync mode: ${config.syncMode}, Concurrency: ${config.concurrency}`);
+  logger.debug(`Concurrency: ${config.concurrency}`);
 
   try {
     // STEP 5: Create Azure Blob client
@@ -387,26 +388,14 @@ export async function watchAzureVenv(
       logger,
     );
 
-    // Create sync infrastructure
-    const manifestPath = path.resolve(config.rootDir, '.azure-venv-manifest.json');
-    const manifestManager = new ManifestManager(manifestPath, logger);
-    const downloader = new BlobDownloader(
-      blobClient,
-      { validateAndResolvePath },
-      logger,
-      config.concurrency,
-      config.maxBlobSize,
-    );
-    const syncEngine = new SyncEngine(blobClient, manifestManager, downloader, logger);
+    // Create sync engine (in-memory)
+    const syncEngine = new SyncEngine(blobClient, logger);
 
     // STEP 6 & 7: Fetch and load remote .env (if exists)
     let remoteEnvLoaded = false;
     let remoteEnv: EnvRecord = {};
 
-    const remoteEnvBuffer = await syncEngine.fetchRemoteEnv(
-      config.blobUrl.prefix,
-      config.rootDir,
-    );
+    const remoteEnvBuffer = await syncEngine.fetchRemoteEnv(config.blobUrl.prefix);
 
     if (remoteEnvBuffer !== null) {
       remoteEnv = parseEnvBuffer(remoteEnvBuffer);
@@ -417,13 +406,11 @@ export async function watchAzureVenv(
     // Apply three-tier precedence: OS > remote .env > local .env
     const envResult = applyPrecedence(osEnvSnapshot, localEnv, remoteEnv, logger);
 
-    // STEP 8: Sync remaining files
-    const syncStats = await syncEngine.syncFiles(config);
+    // STEP 8: Read all blobs into memory
+    const readResult = await syncEngine.readBlobs(config);
 
-    // Build introspection data from manifest and env result
-    const finalManifest = await manifestManager.load();
-    const syncedFiles = manifestToSyncedFiles(finalManifest);
-    const fileTree = buildFileTree(syncedFiles);
+    // Build introspection data
+    const fileTree = buildFileTree(readResult.blobs);
 
     const envDetails: EnvDetails = {
       variables: envResult.variables,
@@ -437,21 +424,20 @@ export async function watchAzureVenv(
     const duration = Date.now() - startTime;
     const initialSync: SyncResult = {
       attempted: true,
-      totalBlobs: syncStats.totalBlobs,
-      downloaded: syncStats.downloaded,
-      skipped: syncStats.skipped,
-      failed: syncStats.failed,
-      failedBlobs: syncStats.failedBlobs,
+      totalBlobs: readResult.totalBlobs,
+      downloaded: readResult.blobs.length,
+      failed: readResult.failed,
+      failedBlobs: readResult.failedBlobs,
       duration,
       remoteEnvLoaded,
       envSources: envResult.sources,
-      syncedFiles,
+      blobs: readResult.blobs,
       fileTree,
       envDetails,
     };
 
     logger.info(
-      `Initial sync complete: ${initialSync.downloaded} downloaded, ${initialSync.skipped} skipped, ${initialSync.failed} failed in ${initialSync.duration}ms`,
+      `Initial sync complete: ${initialSync.downloaded} read, ${initialSync.failed} failed in ${initialSync.duration}ms`,
     );
 
     // STEP 9: Start watch mode if enabled
@@ -467,6 +453,9 @@ export async function watchAzureVenv(
         osEnvSnapshot,
         localEnv,
       );
+
+      // Seed the watcher with known ETags from initial sync
+      watcher.setInitialEtags(readResult.blobs);
 
       const watchHandle = watcher.start(options);
       stopFn = watchHandle.stop;
@@ -493,26 +482,7 @@ export async function watchAzureVenv(
       logger.warn(`Azure sync failed (failOnError=false): ${error.message}`);
 
       return {
-        initialSync: {
-          attempted: true,
-          totalBlobs: 0,
-          downloaded: 0,
-          skipped: 0,
-          failed: 0,
-          failedBlobs: [],
-          duration: Date.now() - startTime,
-          remoteEnvLoaded: false,
-          envSources: {},
-          syncedFiles: [],
-          fileTree: [],
-          envDetails: {
-            variables: {},
-            sources: {},
-            localKeys: [],
-            remoteKeys: [],
-            osKeys: [],
-          },
-        },
+        initialSync: failedSyncResult(startTime),
         stop: () => {
           /* no-op */
         },
@@ -531,26 +501,7 @@ export async function watchAzureVenv(
     );
 
     return {
-      initialSync: {
-        attempted: true,
-        totalBlobs: 0,
-        downloaded: 0,
-        skipped: 0,
-        failed: 0,
-        failedBlobs: [],
-        duration: Date.now() - startTime,
-        remoteEnvLoaded: false,
-        envSources: {},
-        syncedFiles: [],
-        fileTree: [],
-        envDetails: {
-          variables: {},
-          sources: {},
-          localKeys: [],
-          remoteKeys: [],
-          osKeys: [],
-        },
-      },
+      initialSync: failedSyncResult(startTime),
       stop: () => {
         /* no-op */
       },

@@ -17,7 +17,6 @@ const azureVenvEnvSchema = z.object({
   ),
   AZURE_VENV_SAS_TOKEN: z.string().min(1, 'AZURE_VENV_SAS_TOKEN must not be empty'),
   AZURE_VENV_SAS_EXPIRY: z.string().datetime().optional(),
-  AZURE_VENV_SYNC_MODE: z.enum(['full', 'incremental']).default('full'),
   AZURE_VENV_FAIL_ON_ERROR: z
     .enum(['true', 'false'])
     .default('false')
@@ -35,12 +34,6 @@ const azureVenvEnvSchema = z.object({
     .transform(Number)
     .refine((n) => n >= 1000 && n <= 300000, 'AZURE_VENV_TIMEOUT must be between 1000 and 300000'),
   AZURE_VENV_LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-  AZURE_VENV_MAX_BLOB_SIZE: z
-    .string()
-    .regex(/^\d+$/, 'AZURE_VENV_MAX_BLOB_SIZE must be a positive integer')
-    .default('104857600')
-    .transform(Number)
-    .refine((n) => n >= 1048576, 'AZURE_VENV_MAX_BLOB_SIZE must be at least 1048576 (1MB)'),
   AZURE_VENV_POLL_INTERVAL: z
     .string()
     .regex(/^\d+$/, 'AZURE_VENV_POLL_INTERVAL must be a positive integer')
@@ -138,7 +131,7 @@ function checkSasExpiry(expiry: Date | null): void {
  * Contract:
  *   - Options override env vars override defaults
  *   - Returns a fully resolved AzureVenvConfig with all fields populated
- *   - Operational defaults: syncMode='full', failOnError=false,
+ *   - Operational defaults: failOnError=false,
  *     concurrency=5, timeout=30000, logLevel='info'
  *   - Warns if SAS token expires within 7 days
  */
@@ -181,12 +174,10 @@ export function validateConfig(
   // Include optional env vars only if they are defined
   const optionalKeys = [
     'AZURE_VENV_SAS_EXPIRY',
-    'AZURE_VENV_SYNC_MODE',
     'AZURE_VENV_FAIL_ON_ERROR',
     'AZURE_VENV_CONCURRENCY',
     'AZURE_VENV_TIMEOUT',
     'AZURE_VENV_LOG_LEVEL',
-    'AZURE_VENV_MAX_BLOB_SIZE',
     'AZURE_VENV_POLL_INTERVAL',
     'AZURE_VENV_WATCH_ENABLED',
   ] as const;
@@ -233,14 +224,12 @@ export function validateConfig(
     blobUrl,
     sasToken: cleanSasToken,
     sasExpiry,
-    syncMode: options?.syncMode ?? validated.AZURE_VENV_SYNC_MODE,
     failOnError: options?.failOnError ?? validated.AZURE_VENV_FAIL_ON_ERROR,
     concurrency: options?.concurrency ?? validated.AZURE_VENV_CONCURRENCY,
     timeout: options?.timeout ?? validated.AZURE_VENV_TIMEOUT,
     logLevel: options?.logLevel ?? validated.AZURE_VENV_LOG_LEVEL,
     rootDir: options?.rootDir ?? process.cwd(),
     envPath: options?.envPath ?? '.env',
-    maxBlobSize: options?.maxBlobSize ?? validated.AZURE_VENV_MAX_BLOB_SIZE,
     pollInterval: options?.pollInterval ?? validated.AZURE_VENV_POLL_INTERVAL,
     watchEnabled: options?.watchEnabled ?? validated.AZURE_VENV_WATCH_ENABLED,
   };

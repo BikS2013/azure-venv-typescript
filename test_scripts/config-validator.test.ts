@@ -71,14 +71,11 @@ describe('validateConfig', () => {
   // -------------------------------------------------------
   it('options override env var values', () => {
     const env = validEnv({
-      AZURE_VENV_SYNC_MODE: 'full',
       AZURE_VENV_CONCURRENCY: '10',
     });
     const config = validateConfig(env, {
-      syncMode: 'incremental',
       concurrency: 3,
     });
-    expect(config!.syncMode).toBe('incremental');
     expect(config!.concurrency).toBe(3);
   });
 
@@ -87,13 +84,11 @@ describe('validateConfig', () => {
   // -------------------------------------------------------
   it('uses correct defaults for operational params', () => {
     const config = validateConfig(validEnv());
-    expect(config!.syncMode).toBe('full');
     expect(config!.failOnError).toBe(false);
     expect(config!.concurrency).toBe(5);
     expect(config!.timeout).toBe(30000);
     expect(config!.logLevel).toBe('info');
     expect(config!.envPath).toBe('.env');
-    expect(config!.maxBlobSize).toBe(104857600);
     expect(config!.pollInterval).toBe(30000);
     expect(config!.watchEnabled).toBe(false);
   });
@@ -148,11 +143,6 @@ describe('validateConfig', () => {
 
   it('throws ConfigurationError for invalid AZURE_VENV_LOG_LEVEL', () => {
     const env = validEnv({ AZURE_VENV_LOG_LEVEL: 'verbose' });
-    expect(() => validateConfig(env)).toThrow(ConfigurationError);
-  });
-
-  it('throws ConfigurationError for invalid AZURE_VENV_SYNC_MODE', () => {
-    const env = validEnv({ AZURE_VENV_SYNC_MODE: 'partial' });
     expect(() => validateConfig(env)).toThrow(ConfigurationError);
   });
 

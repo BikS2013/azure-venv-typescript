@@ -2,7 +2,6 @@
 export type {
   ParsedBlobUrl,
   LogLevel,
-  SyncMode,
   AzureVenvConfig,
   AzureVenvOptions,
   RawEnvConfig,
@@ -12,7 +11,6 @@ export type {
 export type {
   BlobInfo,
   BlobClientConfig,
-  BlobDownloadResult,
 } from '../azure/types.js';
 
 // Re-export Logger
@@ -49,28 +47,30 @@ export interface EnvLoadResult {
 }
 
 /**
- * Information about a single file synced from Azure Blob Storage.
- * Built from the sync manifest after sync completes.
+ * A blob's content held in memory after download from Azure Blob Storage.
  */
-export interface SyncedFileInfo {
-  /** Relative path of the file within the application root (forward-slash normalized). */
-  readonly localPath: string;
-
+export interface BlobContent {
   /** Full blob name in Azure Blob Storage. */
   readonly blobName: string;
 
-  /** File size in bytes. */
+  /** Path relative to prefix (e.g., "config/app.json"). Forward-slash normalized. */
+  readonly relativePath: string;
+
+  /** Raw blob content. */
+  readonly content: Buffer;
+
+  /** Content length in bytes. */
   readonly size: number;
 
-  /** Last modified date in Azure (ISO 8601 string). */
-  readonly lastModified: string;
-
-  /** ETag of the blob at time of sync. */
+  /** Blob ETag. */
   readonly etag: string;
+
+  /** Last modified date (ISO 8601). */
+  readonly lastModified: string;
 }
 
 /**
- * A node in the hierarchical file tree representation of synced files.
+ * A node in the hierarchical file tree representation of blobs.
  * Directories contain children; files are leaf nodes.
  */
 export interface FileTreeNode {
@@ -80,7 +80,7 @@ export interface FileTreeNode {
   /** Whether this node represents a file or a directory. */
   readonly type: 'file' | 'directory';
 
-  /** Relative path from the application root (forward-slash separated). */
+  /** Relative path from the blob prefix (forward-slash separated). */
   readonly path: string;
 
   /** Child nodes. Present and non-empty only for directory nodes. */
@@ -128,11 +128,8 @@ export interface SyncResult {
   /** Total number of blobs found in Azure Blob Storage. */
   readonly totalBlobs: number;
 
-  /** Number of blobs successfully downloaded. */
+  /** Number of blobs successfully downloaded to memory. */
   readonly downloaded: number;
-
-  /** Number of blobs skipped (ETag matched, no change). */
-  readonly skipped: number;
 
   /** Number of blobs that failed to download. */
   readonly failed: number;
@@ -149,10 +146,10 @@ export interface SyncResult {
   /** Map of environment variable names to their source tier. */
   readonly envSources: Readonly<Record<string, EnvSource>>;
 
-  /** Flat list of all synced files, sorted by localPath. Built from the sync manifest. */
-  readonly syncedFiles: readonly SyncedFileInfo[];
+  /** In-memory blob contents, sorted by relativePath. */
+  readonly blobs: readonly BlobContent[];
 
-  /** Hierarchical tree of all synced files. Built from syncedFiles via buildFileTree(). */
+  /** Hierarchical tree of all blobs. Built from blobs via buildFileTree(). */
   readonly fileTree: readonly FileTreeNode[];
 
   /** Full environment variable introspection data. */
@@ -166,13 +163,12 @@ export const NO_OP_SYNC_RESULT: SyncResult = {
   attempted: false,
   totalBlobs: 0,
   downloaded: 0,
-  skipped: 0,
   failed: 0,
   failedBlobs: [],
   duration: 0,
   remoteEnvLoaded: false,
   envSources: {},
-  syncedFiles: [],
+  blobs: [],
   fileTree: [],
   envDetails: {
     variables: {},
@@ -182,43 +178,6 @@ export const NO_OP_SYNC_RESULT: SyncResult = {
     osKeys: [],
   },
 } as const;
-
-/**
- * Manifest entry for a single synced blob.
- */
-export interface ManifestEntry {
-  /** Full blob name in Azure. */
-  readonly blobName: string;
-
-  /** ETag at the time of last successful sync. */
-  readonly etag: string;
-
-  /** Last modified date at time of last sync (ISO 8601). */
-  readonly lastModified: string;
-
-  /** Content length in bytes at time of last sync. */
-  readonly contentLength: number;
-
-  /** Local file path where the blob was written (relative to rootDir). */
-  readonly localPath: string;
-
-  /** Timestamp when this entry was last synced (ISO 8601). */
-  readonly syncedAt: string;
-}
-
-/**
- * The full sync manifest stored as .azure-venv-manifest.json.
- */
-export interface SyncManifest {
-  /** Schema version for forward compatibility. Current: 1. */
-  readonly version: number;
-
-  /** Timestamp of the last full sync run (ISO 8601). */
-  readonly lastSyncAt: string;
-
-  /** Map of blob names to their manifest entries. */
-  readonly entries: Record<string, ManifestEntry>;
-}
 
 // ---- Watch Mode Types ----
 
@@ -237,11 +196,14 @@ export interface WatchChangeEvent {
   /** Full blob name in Azure. */
   readonly blobName: string;
 
-  /** Local path where the blob was synced. */
-  readonly localPath: string;
+  /** Relative path from the blob prefix. */
+  readonly relativePath: string;
 
   /** Timestamp when the change was detected. */
   readonly timestamp: Date;
+
+  /** Updated blob content (available after download). */
+  readonly blob?: BlobContent;
 }
 
 /**

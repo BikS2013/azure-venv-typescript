@@ -1,4 +1,4 @@
-import type { SyncedFileInfo, FileTreeNode } from '../types/index.js';
+import type { BlobContent, FileTreeNode } from '../types/index.js';
 
 /**
  * Internal mutable node used during tree construction.
@@ -13,17 +13,17 @@ interface MutableTreeNode {
 }
 
 /**
- * Build a hierarchical file tree from a flat list of synced files.
+ * Build a hierarchical file tree from a list of in-memory blob contents.
  *
  * The returned array contains root-level nodes. Directories are sorted
  * before files at each level; within each group, nodes are sorted
  * alphabetically by name.
  *
- * @param syncedFiles - Flat list of synced file info objects.
+ * @param blobs - Array of BlobContent objects.
  * @returns Array of root-level FileTreeNode objects.
  */
-export function buildFileTree(syncedFiles: readonly SyncedFileInfo[]): FileTreeNode[] {
-  if (syncedFiles.length === 0) {
+export function buildFileTree(blobs: readonly BlobContent[]): FileTreeNode[] {
+  if (blobs.length === 0) {
     return [];
   }
 
@@ -35,8 +35,8 @@ export function buildFileTree(syncedFiles: readonly SyncedFileInfo[]): FileTreeN
     children: new Map(),
   };
 
-  for (const file of syncedFiles) {
-    const segments = file.localPath.replace(/\\/g, '/').split('/');
+  for (const blob of blobs) {
+    const segments = blob.relativePath.replace(/\\/g, '/').split('/');
     let current = root;
 
     // Create/traverse intermediate directory nodes
@@ -60,10 +60,10 @@ export function buildFileTree(syncedFiles: readonly SyncedFileInfo[]): FileTreeN
     current.children.set(fileName, {
       name: fileName,
       type: 'file',
-      path: file.localPath.replace(/\\/g, '/'),
+      path: blob.relativePath.replace(/\\/g, '/'),
       children: new Map(),
-      size: file.size,
-      blobName: file.blobName,
+      size: blob.size,
+      blobName: blob.blobName,
     });
   }
 

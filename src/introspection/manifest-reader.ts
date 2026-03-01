@@ -1,21 +1,12 @@
-import type { SyncManifest, SyncedFileInfo } from '../types/index.js';
+import type { BlobContent } from '../types/index.js';
 
 /**
- * Convert manifest entries to a flat, sorted list of SyncedFileInfo objects.
+ * Return a flat, sorted list of BlobContent objects.
+ * This is a convenience pass-through that ensures consistent sorting by relativePath.
  *
- * @param manifest - The sync manifest after sync completes.
- * @returns Flat list of SyncedFileInfo, sorted alphabetically by localPath.
+ * @param blobs - The in-memory blob contents after sync.
+ * @returns Sorted array of BlobContent (by relativePath, ascending).
  */
-export function manifestToSyncedFiles(manifest: SyncManifest): SyncedFileInfo[] {
-  const entries = Object.values(manifest.entries);
-
-  return entries
-    .map((entry) => ({
-      localPath: entry.localPath.replace(/\\/g, '/'),
-      blobName: entry.blobName,
-      size: entry.contentLength,
-      lastModified: entry.lastModified,
-      etag: entry.etag,
-    }))
-    .sort((a, b) => a.localPath.localeCompare(b.localPath));
+export function sortBlobs(blobs: readonly BlobContent[]): BlobContent[] {
+  return [...blobs].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }

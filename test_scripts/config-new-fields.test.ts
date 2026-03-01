@@ -12,32 +12,6 @@ function validEnv(overrides: Record<string, string> = {}): Record<string, string
   };
 }
 
-describe('validateConfig - AZURE_VENV_MAX_BLOB_SIZE', () => {
-  it('defaults to 104857600 (100MB) when not provided', () => {
-    const config = validateConfig(validEnv());
-    expect(config).not.toBeNull();
-    expect(config!.maxBlobSize).toBe(104857600);
-  });
-
-  it('rejects values below 1048576 (1MB)', () => {
-    expect(() =>
-      validateConfig(validEnv({ AZURE_VENV_MAX_BLOB_SIZE: '500000' })),
-    ).toThrow(ConfigurationError);
-  });
-
-  it('accepts valid values above minimum', () => {
-    const config = validateConfig(validEnv({ AZURE_VENV_MAX_BLOB_SIZE: '5242880' }));
-    expect(config).not.toBeNull();
-    expect(config!.maxBlobSize).toBe(5242880);
-  });
-
-  it('accepts the minimum valid value of 1048576', () => {
-    const config = validateConfig(validEnv({ AZURE_VENV_MAX_BLOB_SIZE: '1048576' }));
-    expect(config).not.toBeNull();
-    expect(config!.maxBlobSize).toBe(1048576);
-  });
-});
-
 describe('validateConfig - AZURE_VENV_POLL_INTERVAL', () => {
   it('defaults to 30000 when not provided', () => {
     const config = validateConfig(validEnv());
@@ -91,15 +65,6 @@ describe('validateConfig - AZURE_VENV_WATCH_ENABLED', () => {
 });
 
 describe('validateConfig - options override env vars for new fields', () => {
-  it('options.maxBlobSize overrides AZURE_VENV_MAX_BLOB_SIZE env var', () => {
-    const config = validateConfig(
-      validEnv({ AZURE_VENV_MAX_BLOB_SIZE: '5242880' }),
-      { maxBlobSize: 10485760 },
-    );
-    expect(config).not.toBeNull();
-    expect(config!.maxBlobSize).toBe(10485760);
-  });
-
   it('options.pollInterval overrides AZURE_VENV_POLL_INTERVAL env var', () => {
     const config = validateConfig(
       validEnv({ AZURE_VENV_POLL_INTERVAL: '10000' }),

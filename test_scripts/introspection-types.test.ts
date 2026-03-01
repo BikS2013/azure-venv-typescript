@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { NO_OP_SYNC_RESULT } from '../src/types/index.js';
-import type { SyncResult, SyncedFileInfo, FileTreeNode, EnvDetails } from '../src/types/index.js';
+import type { SyncResult, BlobContent, FileTreeNode, EnvDetails } from '../src/types/index.js';
 
 describe('Introspection types on SyncResult', () => {
   it('NO_OP_SYNC_RESULT includes empty introspection fields', () => {
-    expect(NO_OP_SYNC_RESULT.syncedFiles).toEqual([]);
+    expect(NO_OP_SYNC_RESULT.blobs).toEqual([]);
     expect(NO_OP_SYNC_RESULT.fileTree).toEqual([]);
     expect(NO_OP_SYNC_RESULT.envDetails).toEqual({
       variables: {},
@@ -15,20 +15,26 @@ describe('Introspection types on SyncResult', () => {
     });
   });
 
-  it('SyncedFileInfo has all expected fields', () => {
-    const file: SyncedFileInfo = {
-      localPath: 'config.json',
+  it('NO_OP_SYNC_RESULT does not have skipped field', () => {
+    expect(NO_OP_SYNC_RESULT).not.toHaveProperty('skipped');
+  });
+
+  it('BlobContent has all expected fields', () => {
+    const blob: BlobContent = {
       blobName: 'prefix/config.json',
-      size: 1024,
-      lastModified: '2026-01-01T00:00:00.000Z',
+      relativePath: 'config.json',
+      content: Buffer.from('{}'),
+      size: 2,
       etag: '"abc"',
+      lastModified: '2026-01-01T00:00:00.000Z',
     };
 
-    expect(file.localPath).toBe('config.json');
-    expect(file.blobName).toBe('prefix/config.json');
-    expect(file.size).toBe(1024);
-    expect(file.lastModified).toBe('2026-01-01T00:00:00.000Z');
-    expect(file.etag).toBe('"abc"');
+    expect(blob.blobName).toBe('prefix/config.json');
+    expect(blob.relativePath).toBe('config.json');
+    expect(blob.content).toBeInstanceOf(Buffer);
+    expect(blob.size).toBe(2);
+    expect(blob.etag).toBe('"abc"');
+    expect(blob.lastModified).toBe('2026-01-01T00:00:00.000Z');
   });
 
   it('FileTreeNode directory has children', () => {
@@ -86,19 +92,19 @@ describe('Introspection types on SyncResult', () => {
       attempted: true,
       totalBlobs: 5,
       downloaded: 3,
-      skipped: 2,
       failed: 0,
       failedBlobs: [],
       duration: 1500,
       remoteEnvLoaded: true,
       envSources: { DB_HOST: 'remote' },
-      syncedFiles: [
+      blobs: [
         {
-          localPath: 'config.json',
           blobName: 'p/config.json',
-          size: 100,
-          lastModified: '2026-01-01T00:00:00.000Z',
+          relativePath: 'config.json',
+          content: Buffer.from('{}'),
+          size: 2,
           etag: '"e1"',
+          lastModified: '2026-01-01T00:00:00.000Z',
         },
       ],
       fileTree: [
@@ -106,7 +112,7 @@ describe('Introspection types on SyncResult', () => {
           name: 'config.json',
           type: 'file',
           path: 'config.json',
-          size: 100,
+          size: 2,
           blobName: 'p/config.json',
         },
       ],
@@ -119,7 +125,7 @@ describe('Introspection types on SyncResult', () => {
       },
     };
 
-    expect(result.syncedFiles).toHaveLength(1);
+    expect(result.blobs).toHaveLength(1);
     expect(result.fileTree).toHaveLength(1);
     expect(result.envDetails.variables['DB_HOST']).toBe('remote-host');
   });

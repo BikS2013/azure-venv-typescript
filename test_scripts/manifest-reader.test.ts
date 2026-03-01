@@ -1,143 +1,57 @@
 import { describe, it, expect } from 'vitest';
-import { manifestToSyncedFiles } from '../src/introspection/manifest-reader.js';
-import type { SyncManifest } from '../src/types/index.js';
+import { sortBlobs } from '../src/introspection/manifest-reader.js';
+import type { BlobContent } from '../src/types/index.js';
 
-describe('manifestToSyncedFiles', () => {
-  it('returns empty array for empty manifest', () => {
-    const manifest: SyncManifest = {
-      version: 1,
-      lastSyncAt: '2026-01-01T00:00:00.000Z',
-      entries: {},
-    };
+function makeBlob(relativePath: string, blobName?: string, size = 100): BlobContent {
+  return {
+    blobName: blobName ?? `prefix/${relativePath}`,
+    relativePath,
+    content: Buffer.from('test'),
+    size,
+    etag: '"abc123"',
+    lastModified: '2026-01-01T12:00:00.000Z',
+  };
+}
 
-    const result = manifestToSyncedFiles(manifest);
+describe('sortBlobs', () => {
+  it('returns empty array for empty input', () => {
+    const result = sortBlobs([]);
     expect(result).toEqual([]);
   });
 
-  it('maps ManifestEntry fields to SyncedFileInfo correctly', () => {
-    const manifest: SyncManifest = {
-      version: 1,
-      lastSyncAt: '2026-01-01T00:00:00.000Z',
-      entries: {
-        'prefix/config.json': {
-          blobName: 'prefix/config.json',
-          etag: '"abc123"',
-          lastModified: '2026-01-01T12:00:00.000Z',
-          contentLength: 1024,
-          localPath: 'config.json',
-          syncedAt: '2026-01-01T12:00:01.000Z',
-        },
-      },
-    };
+  it('returns blobs sorted by relativePath', () => {
+    const blobs = [
+      makeBlob('z-file.txt'),
+      makeBlob('a-file.txt'),
+      makeBlob('dir/m-file.txt'),
+    ];
 
-    const result = manifestToSyncedFiles(manifest);
-    expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({
-      localPath: 'config.json',
-      blobName: 'prefix/config.json',
-      size: 1024,
-      lastModified: '2026-01-01T12:00:00.000Z',
-      etag: '"abc123"',
-    });
-  });
-
-  it('excludes syncedAt from output (internal bookkeeping)', () => {
-    const manifest: SyncManifest = {
-      version: 1,
-      lastSyncAt: '2026-01-01T00:00:00.000Z',
-      entries: {
-        'blob1': {
-          blobName: 'blob1',
-          etag: '"e1"',
-          lastModified: '2026-01-01T00:00:00.000Z',
-          contentLength: 100,
-          localPath: 'file1.txt',
-          syncedAt: '2026-01-01T00:00:01.000Z',
-        },
-      },
-    };
-
-    const result = manifestToSyncedFiles(manifest);
-    expect(result[0]).not.toHaveProperty('syncedAt');
-  });
-
-  it('sorts output alphabetically by localPath', () => {
-    const manifest: SyncManifest = {
-      version: 1,
-      lastSyncAt: '2026-01-01T00:00:00.000Z',
-      entries: {
-        'blob-z': {
-          blobName: 'blob-z',
-          etag: '"e1"',
-          lastModified: '2026-01-01T00:00:00.000Z',
-          contentLength: 100,
-          localPath: 'z-file.txt',
-          syncedAt: '2026-01-01T00:00:01.000Z',
-        },
-        'blob-a': {
-          blobName: 'blob-a',
-          etag: '"e2"',
-          lastModified: '2026-01-01T00:00:00.000Z',
-          contentLength: 200,
-          localPath: 'a-file.txt',
-          syncedAt: '2026-01-01T00:00:01.000Z',
-        },
-        'blob-m': {
-          blobName: 'blob-m',
-          etag: '"e3"',
-          lastModified: '2026-01-01T00:00:00.000Z',
-          contentLength: 300,
-          localPath: 'dir/m-file.txt',
-          syncedAt: '2026-01-01T00:00:01.000Z',
-        },
-      },
-    };
-
-    const result = manifestToSyncedFiles(manifest);
-    expect(result.map((f) => f.localPath)).toEqual([
+    const result = sortBlobs(blobs);
+    expect(result.map((b) => b.relativePath)).toEqual([
       'a-file.txt',
       'dir/m-file.txt',
       'z-file.txt',
     ]);
   });
 
-  it('normalizes backslash paths to forward slashes', () => {
-    const manifest: SyncManifest = {
-      version: 1,
-      lastSyncAt: '2026-01-01T00:00:00.000Z',
-      entries: {
-        'blob1': {
-          blobName: 'blob1',
-          etag: '"e1"',
-          lastModified: '2026-01-01T00:00:00.000Z',
-          contentLength: 100,
-          localPath: 'subdir\\nested\\file.txt',
-          syncedAt: '2026-01-01T00:00:01.000Z',
-        },
-      },
-    };
+  it('preserves all blob fields', () => {
+    const blobs = [makeBlob('config.json', 'prefix/config.json', 1024)];
+    const result = sortBlobs(blobs);
 
-    const result = manifestToSyncedFiles(manifest);
-    expect(result[0].localPath).toBe('subdir/nested/file.txt');
+    expect(result).toHaveLength(1);
+    expect(result[0].relativePath).toBe('config.json');
+    expect(result[0].blobName).toBe('prefix/config.json');
+    expect(result[0].size).toBe(1024);
+    expect(result[0].etag).toBe('"abc123"');
+    expect(result[0].lastModified).toBe('2026-01-01T12:00:00.000Z');
+    expect(result[0].content).toBeInstanceOf(Buffer);
   });
 
-  it('maps contentLength to size field', () => {
-    const manifest: SyncManifest = {
-      version: 1,
-      lastSyncAt: '2026-01-01T00:00:00.000Z',
-      entries: {
-        'blob1': {
-          blobName: 'blob1',
-          etag: '"e1"',
-          lastModified: '2026-01-01T00:00:00.000Z',
-          contentLength: 52428800,
-          localPath: 'large-file.bin',
-          syncedAt: '2026-01-01T00:00:01.000Z',
-        },
-      },
-    };
+  it('does not mutate the original array', () => {
+    const blobs = [makeBlob('b.txt'), makeBlob('a.txt')];
+    const result = sortBlobs(blobs);
 
-    const result = manifestToSyncedFiles(manifest);
-    expect(result[0].size).toBe(52428800);
+    expect(blobs[0].relativePath).toBe('b.txt');
+    expect(result[0].relativePath).toBe('a.txt');
   });
 });

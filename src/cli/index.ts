@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { initAzureVenv } from '../initialize.js';
-import type { AzureVenvOptions, LogLevel, SyncMode } from '../config/types.js';
+import type { AzureVenvOptions, LogLevel } from '../config/types.js';
 import type { SyncResult, FileTreeNode } from '../types/index.js';
 
 const program = new Command();
 
 program
   .name('azure-venv')
-  .version('0.2.0')
-  .description('CLI tool for azure-venv: sync Azure Blob Storage to local filesystem');
+  .version('0.4.0')
+  .description('CLI tool for azure-venv: read Azure Blob Storage files into memory');
 
 /**
  * Print a sync result summary to stdout.
@@ -20,7 +20,6 @@ function printSyncSummary(result: SyncResult): void {
   console.log(`  Attempted:      ${result.attempted}`);
   console.log(`  Total blobs:    ${result.totalBlobs}`);
   console.log(`  Downloaded:     ${result.downloaded}`);
-  console.log(`  Skipped:        ${result.skipped}`);
   console.log(`  Failed:         ${result.failed}`);
   console.log(`  Duration:       ${result.duration}ms`);
   console.log(`  Remote .env:    ${result.remoteEnvLoaded ? 'loaded' : 'not loaded'}`);
@@ -37,13 +36,13 @@ function printSyncSummary(result: SyncResult): void {
     console.log(`  Env sources:    ${envSourceKeys.length} variable(s) tracked`);
   }
 
-  // Synced files list
-  if (result.syncedFiles.length > 0) {
+  // Blobs list
+  if (result.blobs.length > 0) {
     console.log('');
-    console.log('=== Synced Files ===');
-    for (const file of result.syncedFiles) {
-      const sizeKB = (file.size / 1024).toFixed(1);
-      console.log(`  ${file.localPath} (${sizeKB} KB)`);
+    console.log('=== Blobs ===');
+    for (const blob of result.blobs) {
+      const sizeKB = (blob.size / 1024).toFixed(1);
+      console.log(`  ${blob.relativePath} (${sizeKB} KB)`);
     }
   }
 
@@ -103,9 +102,6 @@ function buildOptions(opts: Record<string, unknown>): AzureVenvOptions {
   if (opts.concurrency !== undefined) {
     options.concurrency = Number(opts.concurrency);
   }
-  if (opts.syncMode !== undefined) {
-    options.syncMode = opts.syncMode as SyncMode;
-  }
   if (opts.pollInterval !== undefined) {
     options.pollInterval = Number(opts.pollInterval);
   }
@@ -117,12 +113,11 @@ function buildOptions(opts: Record<string, unknown>): AzureVenvOptions {
 
 program
   .command('sync')
-  .description('Perform a one-time sync from Azure Blob Storage')
+  .description('Perform a one-time read of Azure Blob Storage files into memory')
   .option('--root-dir <path>', 'Application root directory')
   .option('--log-level <level>', 'Log level (debug, info, warn, error)')
   .option('--fail-on-error', 'Exit with error on any Azure failure')
   .option('--concurrency <number>', 'Max parallel blob downloads')
-  .option('--sync-mode <mode>', 'Sync mode (full, incremental)')
   .action(async (opts: Record<string, unknown>) => {
     try {
       const options = buildOptions(opts);
@@ -151,7 +146,6 @@ program
   .option('--log-level <level>', 'Log level (debug, info, warn, error)')
   .option('--fail-on-error', 'Exit with error on any Azure failure')
   .option('--concurrency <number>', 'Max parallel blob downloads')
-  .option('--sync-mode <mode>', 'Sync mode (full, incremental)')
   .option('--poll-interval <ms>', 'Polling interval in milliseconds')
   .action(async (opts: Record<string, unknown>) => {
     try {

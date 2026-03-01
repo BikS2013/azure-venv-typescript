@@ -1,14 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { buildFileTree } from '../src/introspection/file-tree.js';
-import type { SyncedFileInfo, FileTreeNode } from '../src/types/index.js';
+import type { BlobContent, FileTreeNode } from '../src/types/index.js';
 
-function makeFile(localPath: string, size = 100, blobName?: string): SyncedFileInfo {
+function makeBlob(relativePath: string, size = 100, blobName?: string): BlobContent {
   return {
-    localPath,
-    blobName: blobName ?? `prefix/${localPath}`,
+    blobName: blobName ?? `prefix/${relativePath}`,
+    relativePath,
+    content: Buffer.from('test'),
     size,
-    lastModified: '2026-01-01T00:00:00.000Z',
     etag: '"etag"',
+    lastModified: '2026-01-01T00:00:00.000Z',
   };
 }
 
@@ -18,8 +19,8 @@ describe('buildFileTree', () => {
   });
 
   it('creates a single file node at root level', () => {
-    const files = [makeFile('config.json', 512)];
-    const tree = buildFileTree(files);
+    const blobs = [makeBlob('config.json', 512)];
+    const tree = buildFileTree(blobs);
 
     expect(tree).toHaveLength(1);
     expect(tree[0]).toEqual({
@@ -32,8 +33,8 @@ describe('buildFileTree', () => {
   });
 
   it('creates nested directory structure', () => {
-    const files = [makeFile('src/utils/helper.ts')];
-    const tree = buildFileTree(files);
+    const blobs = [makeBlob('src/utils/helper.ts')];
+    const tree = buildFileTree(blobs);
 
     expect(tree).toHaveLength(1);
     expect(tree[0].name).toBe('src');
@@ -48,11 +49,11 @@ describe('buildFileTree', () => {
   });
 
   it('shares directory nodes for files in same directory', () => {
-    const files = [
-      makeFile('src/a.ts'),
-      makeFile('src/b.ts'),
+    const blobs = [
+      makeBlob('src/a.ts'),
+      makeBlob('src/b.ts'),
     ];
-    const tree = buildFileTree(files);
+    const tree = buildFileTree(blobs);
 
     expect(tree).toHaveLength(1);
     expect(tree[0].name).toBe('src');
@@ -62,12 +63,12 @@ describe('buildFileTree', () => {
   });
 
   it('sorts directories before files at each level', () => {
-    const files = [
-      makeFile('readme.md'),
-      makeFile('src/index.ts'),
-      makeFile('docs/guide.md'),
+    const blobs = [
+      makeBlob('readme.md'),
+      makeBlob('src/index.ts'),
+      makeBlob('docs/guide.md'),
     ];
-    const tree = buildFileTree(files);
+    const tree = buildFileTree(blobs);
 
     // Root level: docs/, src/ (directories first), then readme.md (file)
     expect(tree).toHaveLength(3);
@@ -80,19 +81,19 @@ describe('buildFileTree', () => {
   });
 
   it('sorts alphabetically within directories and files groups', () => {
-    const files = [
-      makeFile('config/z-setting.json'),
-      makeFile('config/a-setting.json'),
+    const blobs = [
+      makeBlob('config/z-setting.json'),
+      makeBlob('config/a-setting.json'),
     ];
-    const tree = buildFileTree(files);
+    const tree = buildFileTree(blobs);
 
     expect(tree[0].children![0].name).toBe('a-setting.json');
     expect(tree[0].children![1].name).toBe('z-setting.json');
   });
 
   it('handles deep nesting correctly', () => {
-    const files = [makeFile('a/b/c/d/e.txt')];
-    const tree = buildFileTree(files);
+    const blobs = [makeBlob('a/b/c/d/e.txt')];
+    const tree = buildFileTree(blobs);
 
     let node: FileTreeNode = tree[0];
     expect(node.name).toBe('a');
@@ -116,26 +117,9 @@ describe('buildFileTree', () => {
     expect(node.path).toBe('a/b/c/d/e.txt');
   });
 
-  it('normalizes backslash paths to forward slashes', () => {
-    const file: SyncedFileInfo = {
-      localPath: 'dir\\sub\\file.txt',
-      blobName: 'prefix/dir/sub/file.txt',
-      size: 100,
-      lastModified: '2026-01-01T00:00:00.000Z',
-      etag: '"etag"',
-    };
-    const tree = buildFileTree([file]);
-
-    expect(tree[0].name).toBe('dir');
-    expect(tree[0].path).toBe('dir');
-    expect(tree[0].children![0].name).toBe('sub');
-    expect(tree[0].children![0].path).toBe('dir/sub');
-    expect(tree[0].children![0].children![0].path).toBe('dir/sub/file.txt');
-  });
-
   it('file nodes have size and blobName, no children', () => {
-    const files = [makeFile('data.json', 2048, 'myblob')];
-    const tree = buildFileTree(files);
+    const blobs = [makeBlob('data.json', 2048, 'myblob')];
+    const tree = buildFileTree(blobs);
 
     expect(tree[0].size).toBe(2048);
     expect(tree[0].blobName).toBe('myblob');
@@ -143,8 +127,8 @@ describe('buildFileTree', () => {
   });
 
   it('directory nodes do not have size or blobName', () => {
-    const files = [makeFile('dir/file.txt')];
-    const tree = buildFileTree(files);
+    const blobs = [makeBlob('dir/file.txt')];
+    const tree = buildFileTree(blobs);
 
     expect(tree[0].type).toBe('directory');
     expect(tree[0].size).toBeUndefined();
@@ -152,16 +136,16 @@ describe('buildFileTree', () => {
   });
 
   it('handles complex mixed tree structure', () => {
-    const files = [
-      makeFile('.env'),
-      makeFile('config/app.json', 200),
-      makeFile('config/db.json', 150),
-      makeFile('templates/email/welcome.html', 3000),
-      makeFile('templates/email/reset.html', 2500),
-      makeFile('templates/sms/verify.txt', 100),
-      makeFile('data/seed.sql', 50000),
+    const blobs = [
+      makeBlob('.env'),
+      makeBlob('config/app.json', 200),
+      makeBlob('config/db.json', 150),
+      makeBlob('templates/email/welcome.html', 3000),
+      makeBlob('templates/email/reset.html', 2500),
+      makeBlob('templates/sms/verify.txt', 100),
+      makeBlob('data/seed.sql', 50000),
     ];
-    const tree = buildFileTree(files);
+    const tree = buildFileTree(blobs);
 
     // Root level: config/, data/, templates/ (dirs first, alphabetical), then .env (file)
     expect(tree.map((n) => n.name)).toEqual(['config', 'data', 'templates', '.env']);

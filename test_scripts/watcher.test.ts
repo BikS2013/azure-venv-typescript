@@ -19,8 +19,6 @@ function createMockLogger(): Logger {
 function createMockClient(blobs: BlobInfo[] = []): AzureVenvBlobClient {
   return {
     listBlobs: vi.fn().mockResolvedValue(blobs),
-    downloadToFile: vi.fn(),
-    downloadToFileStreaming: vi.fn(),
     downloadToBuffer: vi.fn(),
   } as unknown as AzureVenvBlobClient;
 }
@@ -35,14 +33,12 @@ function createMockConfig(overrides: Partial<AzureVenvConfig> = {}): AzureVenvCo
     },
     sasToken: 'sv=2020-08-04&sig=fakesig',
     sasExpiry: null,
-    syncMode: 'full',
     failOnError: false,
     concurrency: 5,
     timeout: 30000,
     logLevel: 'info',
     rootDir: '/tmp/test-watcher',
     envPath: '.env',
-    maxBlobSize: 104857600,
     pollInterval: 5000, // Short interval for testing
     watchEnabled: true,
     ...overrides,
@@ -153,8 +149,6 @@ describe('BlobWatcher', () => {
     // Advance time again - should not trigger more polls
     await vi.advanceTimersByTimeAsync(config.pollInterval);
 
-    // The poll may or may not have been called again depending on timing,
-    // but the abort flag should have been set so poll returns early
     // We verify the watcher logged that it stopped
     expect(mockLogger.info).toHaveBeenCalledWith(
       expect.stringContaining('Watch mode stopped'),
@@ -163,12 +157,12 @@ describe('BlobWatcher', () => {
     handle.stop();
   });
 
-  it('logs "no changes detected" when blob list matches manifest', async () => {
+  it('logs "no changes detected" when blob list matches known ETags', async () => {
     const handle = watcher.start();
 
     // Advance to trigger one poll with empty blob list (default mock returns [])
     await vi.advanceTimersByTimeAsync(config.pollInterval);
-    // Allow async poll operations (listBlobs, manifest load) to complete
+    // Allow async poll operations to complete
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
 

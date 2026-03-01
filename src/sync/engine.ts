@@ -2,34 +2,39 @@ import type { AzureVenvBlobClient } from '../azure/client.js';
 import type { BlobInfo } from '../azure/types.js';
 import type { AzureVenvConfig } from '../config/types.js';
 import type { Logger } from '../logging/logger.js';
-import { ManifestManager } from './manifest.js';
-import { BlobDownloader } from './downloader.js';
-import { stripPrefix } from './path-validator.js';
+import type { BlobContent } from '../types/index.js';
 
 /**
- * Orchestrates the file synchronization process.
+ * Strip a prefix from a blob name to produce a relative path.
+ *
+ * @param blobName - Full blob name including prefix.
+ * @param prefix - The prefix to strip.
+ * @returns Relative path with prefix removed.
+ */
+function stripPrefix(blobName: string, prefix: string): string {
+  if (prefix === '' || !blobName.startsWith(prefix)) {
+    return blobName;
+  }
+  const rel = blobName.slice(prefix.length);
+  return rel === '' || rel === '/' ? blobName : rel;
+}
+
+/**
+ * Orchestrates reading blob contents into memory with concurrency control.
  */
 export class SyncEngine {
   private readonly client: AzureVenvBlobClient;
-  private readonly manifestManager: ManifestManager;
-  private readonly downloader: BlobDownloader;
   private readonly logger: Logger;
 
   /**
    * @param client - Azure Blob client for listing and downloading.
-   * @param manifestManager - Manifest manager for incremental sync tracking.
-   * @param downloader - Blob downloader with concurrency control.
    * @param logger - Logger instance.
    */
   constructor(
     client: AzureVenvBlobClient,
-    manifestManager: ManifestManager,
-    downloader: BlobDownloader,
     logger: Logger,
   ) {
     this.client = client;
-    this.manifestManager = manifestManager;
-    this.downloader = downloader;
     this.logger = logger;
   }
 
@@ -38,10 +43,9 @@ export class SyncEngine {
    * and return its content as a Buffer.
    *
    * @param prefix - The blob prefix (virtual directory).
-   * @param rootDir - Application root directory (unused but kept for interface consistency).
    * @returns Buffer containing the .env content, or null if not found.
    */
-  async fetchRemoteEnv(prefix: string, _rootDir: string): Promise<Buffer | null> {
+  async fetchRemoteEnv(prefix: string): Promise<Buffer | null> {
     const envBlobName = prefix ? `${prefix}.env` : '.env';
 
     this.logger.info(`Checking for remote .env at "${envBlobName}"`);
@@ -60,22 +64,20 @@ export class SyncEngine {
   }
 
   /**
-   * Synchronize all blobs (except .env) from Azure to the local filesystem.
+   * Read all blobs (except .env) from Azure into memory with concurrency control.
    *
    * @param config - Validated configuration.
-   * @returns Statistics about the sync operation.
+   * @returns Statistics and in-memory blob contents.
    */
-  async syncFiles(config: AzureVenvConfig): Promise<{
-    downloaded: number;
-    skipped: number;
+  async readBlobs(config: AzureVenvConfig): Promise<{
+    blobs: BlobContent[];
     failed: number;
     failedBlobs: string[];
     totalBlobs: number;
   }> {
     const prefix = config.blobUrl.prefix;
-    const rootDir = config.rootDir;
 
-    this.logger.info(`Starting file sync with prefix "${prefix}" to "${rootDir}"`);
+    this.logger.info(`Starting in-memory blob read with prefix "${prefix}"`);
 
     // List all blobs under the prefix
     const allBlobs = await this.client.listBlobs(prefix);
@@ -84,96 +86,75 @@ export class SyncEngine {
     const envBlobName = prefix ? `${prefix}.env` : '.env';
     const fileBlobs = allBlobs.filter((blob) => blob.name !== envBlobName);
 
-    this.logger.info(`Found ${fileBlobs.length} blob(s) to sync (excluding .env)`);
+    this.logger.info(`Found ${fileBlobs.length} blob(s) to read (excluding .env)`);
 
     const totalBlobs = fileBlobs.length;
 
     if (totalBlobs === 0) {
       return {
-        downloaded: 0,
-        skipped: 0,
+        blobs: [],
         failed: 0,
         failedBlobs: [],
         totalBlobs: 0,
       };
     }
 
-    // Load manifest for incremental mode
-    const manifest = await this.manifestManager.load();
-    let blobsToDownload: BlobInfo[];
-
-    if (config.syncMode === 'incremental') {
-      // Filter to only blobs that need updating
-      blobsToDownload = fileBlobs.filter((blob) =>
-        this.manifestManager.needsUpdate(blob, manifest),
-      );
-      const skippedCount = totalBlobs - blobsToDownload.length;
-
-      this.logger.info(
-        `Incremental mode: ${blobsToDownload.length} to download, ${skippedCount} unchanged`,
-      );
-    } else {
-      blobsToDownload = fileBlobs;
-      this.logger.info(`Full mode: downloading all ${blobsToDownload.length} blob(s)`);
-    }
-
-    // Download changed blobs
-    const results = await this.downloader.downloadBatch(
-      blobsToDownload,
-      rootDir,
-      prefix,
-    );
-
-    // Track failed blobs
-    const downloadedBlobNames = new Set(results.map((r) => r.blobName));
+    // Download all blobs to memory with concurrency control
+    const blobs: BlobContent[] = [];
     const failedBlobs: string[] = [];
+    const concurrency = config.concurrency;
 
-    for (const blob of blobsToDownload) {
-      if (!downloadedBlobNames.has(blob.name)) {
-        failedBlobs.push(blob.name);
-      }
-    }
+    // Process in batches of `concurrency`
+    for (let i = 0; i < fileBlobs.length; i += concurrency) {
+      const batch = fileBlobs.slice(i, i + concurrency);
 
-    // Update manifest entries for successfully downloaded blobs
-    const updatedEntries = { ...manifest.entries };
+      const results = await Promise.allSettled(
+        batch.map((blob) => this.downloadBlobToMemory(blob, prefix)),
+      );
 
-    for (const result of results) {
-      const matchingBlob = blobsToDownload.find((b) => b.name === result.blobName);
-      if (matchingBlob) {
-        let relativePath: string;
-        try {
-          relativePath = stripPrefix(matchingBlob.name, prefix);
-        } catch {
-          relativePath = result.localPath;
+      for (let j = 0; j < results.length; j++) {
+        const result = results[j];
+        if (result.status === 'fulfilled') {
+          blobs.push(result.value);
+        } else {
+          const blobName = batch[j].name;
+          failedBlobs.push(blobName);
+          this.logger.error(
+            `Failed to read blob "${blobName}": ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+          );
         }
-
-        const entry = this.manifestManager.createEntry(matchingBlob, relativePath);
-        updatedEntries[matchingBlob.name] = entry;
       }
     }
 
-    // Save updated manifest
-    const updatedManifest = {
-      ...manifest,
-      entries: updatedEntries,
-    };
-
-    await this.manifestManager.save(updatedManifest);
-
-    const skipped = totalBlobs - blobsToDownload.length;
-    const downloaded = results.length;
-    const failed = failedBlobs.length;
+    // Sort blobs by relativePath
+    blobs.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 
     this.logger.info(
-      `Sync complete: ${downloaded} downloaded, ${skipped} skipped, ${failed} failed out of ${totalBlobs} total`,
+      `Read complete: ${blobs.length} read, ${failedBlobs.length} failed out of ${totalBlobs} total`,
     );
 
     return {
-      downloaded,
-      skipped,
-      failed,
+      blobs,
+      failed: failedBlobs.length,
       failedBlobs,
       totalBlobs,
+    };
+  }
+
+  /**
+   * Download a single blob into memory and produce a BlobContent object.
+   */
+  private async downloadBlobToMemory(blob: BlobInfo, prefix: string): Promise<BlobContent> {
+    const buffer = await this.client.downloadToBuffer(blob.name);
+    const relativePath = stripPrefix(blob.name, prefix);
+
+    return {
+      blobName: blob.name,
+      relativePath,
+      content: buffer,
+      size: buffer.length,
+      etag: blob.etag,
+      lastModified: blob.lastModified.toISOString(),
     };
   }
 }

@@ -4,11 +4,8 @@ import {
   RestError,
   BlockBlobClient,
 } from '@azure/storage-blob';
-import * as fs from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
-import { pipeline } from 'node:stream/promises';
 
-import type { BlobClientConfig, BlobInfo, BlobDownloadResult } from './types.js';
+import type { BlobClientConfig, BlobInfo } from './types.js';
 import type { Logger } from '../logging/logger.js';
 import { sanitize } from '../logging/logger.js';
 import { AuthenticationError, AzureConnectionError, SyncError } from '../errors/index.js';
@@ -79,110 +76,7 @@ export class AzureVenvBlobClient {
   }
 
   /**
-   * Download a blob directly to a local file path.
-   *
-   * @param blobName - Full blob name in the container.
-   * @param localPath - Absolute local file path to write to.
-   * @returns BlobDownloadResult with metadata.
-   *
-   * @throws AzureConnectionError on network/timeout errors.
-   * @throws AuthenticationError on 403 responses.
-   * @throws SyncError if the local file cannot be written.
-   */
-  async downloadToFile(blobName: string, localPath: string): Promise<BlobDownloadResult> {
-    this.logger.debug(`Downloading blob "${blobName}" to "${localPath}"`);
-
-    try {
-      const blockBlobClient: BlockBlobClient =
-        this.containerClient.getBlockBlobClient(blobName);
-
-      const response = await blockBlobClient.downloadToFile(localPath);
-
-      const result: BlobDownloadResult = {
-        blobName,
-        localPath,
-        etag: response.etag ?? '',
-        lastModified: response.lastModified ?? new Date(0),
-        contentLength: response.contentLength ?? 0,
-      };
-
-      this.logger.debug(
-        `Downloaded blob "${blobName}" (${result.contentLength} bytes)`,
-      );
-
-      return result;
-    } catch (error: unknown) {
-      if (error instanceof AuthenticationError || error instanceof AzureConnectionError || error instanceof SyncError) {
-        throw error;
-      }
-      throw this.translateError(error, `Failed to download blob "${blobName}" to "${localPath}"`);
-    }
-  }
-
-  /**
-   * Download a blob to a local file using streaming.
-   * Preferred for large blobs to avoid buffering entire content in memory.
-   *
-   * @param blobName - Full blob name in the container.
-   * @param localPath - Absolute local file path to write to.
-   * @returns BlobDownloadResult with metadata.
-   *
-   * @throws AzureConnectionError on network/timeout errors.
-   * @throws AuthenticationError on 403 responses.
-   * @throws SyncError if the local file cannot be written.
-   */
-  async downloadToFileStreaming(blobName: string, localPath: string): Promise<BlobDownloadResult> {
-    this.logger.debug(`Streaming download blob "${blobName}" to "${localPath}"`);
-
-    try {
-      const blockBlobClient: BlockBlobClient =
-        this.containerClient.getBlockBlobClient(blobName);
-
-      const response = await blockBlobClient.download(0);
-
-      if (!response.readableStreamBody) {
-        throw new SyncError(
-          `No readable stream body returned for blob "${blobName}"`,
-        );
-      }
-
-      await pipeline(
-        response.readableStreamBody,
-        createWriteStream(localPath),
-      );
-
-      const result: BlobDownloadResult = {
-        blobName,
-        localPath,
-        etag: response.etag ?? '',
-        lastModified: response.lastModified ?? new Date(0),
-        contentLength: response.contentLength ?? 0,
-      };
-
-      this.logger.debug(
-        `Streaming downloaded blob "${blobName}" (${result.contentLength} bytes)`,
-      );
-
-      return result;
-    } catch (error: unknown) {
-      // Clean up partial file left by failed streaming download
-      try {
-        await fs.unlink(localPath);
-        this.logger.debug(`Cleaned up partial file "${localPath}" after streaming failure`);
-      } catch {
-        // File may not exist if the failure happened before writing started
-      }
-
-      if (error instanceof AuthenticationError || error instanceof AzureConnectionError || error instanceof SyncError) {
-        throw error;
-      }
-      throw this.translateError(error, `Failed to stream download blob "${blobName}" to "${localPath}"`);
-    }
-  }
-
-  /**
    * Download a blob's content into memory as a Buffer.
-   * Use for small files like .env that need to be parsed before writing.
    *
    * @param blobName - Full blob name in the container.
    * @returns Buffer containing the blob content.

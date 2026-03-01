@@ -2,7 +2,6 @@ import * as path from 'node:path';
 
 import type { AzureVenvOptions } from './config/types.js';
 import type { SyncResult, EnvRecord, EnvDetails } from './types/index.js';
-import { manifestToSyncedFiles } from './introspection/manifest-reader.js';
 import { buildFileTree } from './introspection/file-tree.js';
 import { NO_OP_SYNC_RESULT } from './types/index.js';
 import { validateConfig } from './config/validator.js';
@@ -11,15 +10,37 @@ import { parseEnvFile, parseEnvBuffer } from './env/loader.js';
 import { applyPrecedence } from './env/precedence.js';
 import { AzureVenvBlobClient } from './azure/client.js';
 import { SyncEngine } from './sync/engine.js';
-import { ManifestManager } from './sync/manifest.js';
-import { BlobDownloader } from './sync/downloader.js';
-import { validateAndResolvePath } from './sync/path-validator.js';
 import {
   AzureVenvError,
   ConfigurationError,
   AuthenticationError,
   AzureConnectionError,
 } from './errors/index.js';
+
+/**
+ * Helper to build a failed SyncResult for error recovery paths.
+ */
+function failedSyncResult(startTime: number): SyncResult {
+  return {
+    attempted: true,
+    totalBlobs: 0,
+    downloaded: 0,
+    failed: 0,
+    failedBlobs: [],
+    duration: Date.now() - startTime,
+    remoteEnvLoaded: false,
+    envSources: {},
+    blobs: [],
+    fileTree: [],
+    envDetails: {
+      variables: {},
+      sources: {},
+      localKeys: [],
+      remoteKeys: [],
+      osKeys: [],
+    },
+  };
+}
 
 /**
  * Initialize the azure-venv library. Call this at application startup, before any other
@@ -30,18 +51,17 @@ import {
  * 2. Checks for AZURE_VENV and AZURE_VENV_SAS_TOKEN in process.env
  * 3. If both are present, connects to Azure Blob Storage
  * 4. Downloads a remote .env (if it exists) and applies it with three-tier precedence
- * 5. Syncs all remaining blob files to the local application root
- * 6. Returns a SyncResult with statistics
+ * 5. Reads all remaining blob files into memory
+ * 6. Returns a SyncResult with blob contents and statistics
  *
  * If AZURE_VENV and AZURE_VENV_SAS_TOKEN are both absent after local .env loading,
  * the function returns a no-op SyncResult (azure-venv is not configured).
  *
  * @param options - Optional configuration overrides. Required config is always from process.env.
- * @returns Promise resolving to SyncResult with sync statistics.
+ * @returns Promise resolving to SyncResult with in-memory blob contents.
  * @throws ConfigurationError if required config is partially present or invalid
  * @throws AuthenticationError if SAS token is expired or authentication fails (when failOnError: true)
  * @throws AzureConnectionError if Azure is unreachable (when failOnError: true)
- * @throws SyncError if filesystem operations fail critically
  */
 export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncResult> {
   const startTime = Date.now();
@@ -69,7 +89,6 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
   }
 
   // STEP 2 & 3: Validate configuration
-  // validateConfig returns null if AZURE_VENV not set, throws if partially configured
   const config = validateConfig(process.env as Record<string, string | undefined>, options);
 
   if (config === null) {
@@ -83,9 +102,7 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
   logger.info('Azure VENV configured, starting sync');
   logger.debug(`Blob URL: ${config.blobUrl.accountUrl}/${config.blobUrl.containerName}`);
   logger.debug(`Prefix: "${config.blobUrl.prefix}"`);
-  logger.debug(`Sync mode: ${config.syncMode}, Concurrency: ${config.concurrency}`);
-
-  // STEP 4: SAS expiry check already done in validateConfig
+  logger.debug(`Concurrency: ${config.concurrency}`);
 
   try {
     // STEP 5: Create Azure Blob client
@@ -100,23 +117,14 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
       logger,
     );
 
-    // Create sync infrastructure (manifest always at project root)
-    const manifestPath = path.resolve(config.rootDir, '.azure-venv-manifest.json');
-    const manifestManager = new ManifestManager(manifestPath, logger);
-    const downloader = new BlobDownloader(
-      blobClient,
-      { validateAndResolvePath },
-      logger,
-      config.concurrency,
-      config.maxBlobSize,
-    );
-    const syncEngine = new SyncEngine(blobClient, manifestManager, downloader, logger);
+    // Create sync engine (in-memory only)
+    const syncEngine = new SyncEngine(blobClient, logger);
 
     // STEP 6 & 7: Fetch and load remote .env (if exists)
     let remoteEnvLoaded = false;
     let remoteEnv: EnvRecord = {};
 
-    const remoteEnvBuffer = await syncEngine.fetchRemoteEnv(config.blobUrl.prefix, config.rootDir);
+    const remoteEnvBuffer = await syncEngine.fetchRemoteEnv(config.blobUrl.prefix);
 
     if (remoteEnvBuffer !== null) {
       remoteEnv = parseEnvBuffer(remoteEnvBuffer);
@@ -127,13 +135,11 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
     // Apply three-tier precedence: OS > remote .env > local .env
     const envResult = applyPrecedence(osEnvSnapshot, localEnv, remoteEnv, logger);
 
-    // STEP 8: Sync remaining files
-    const syncStats = await syncEngine.syncFiles(config);
+    // STEP 8: Read all blobs into memory
+    const readResult = await syncEngine.readBlobs(config);
 
-    // STEP 9: Build introspection data from manifest and env result
-    const finalManifest = await manifestManager.load();
-    const syncedFiles = manifestToSyncedFiles(finalManifest);
-    const fileTree = buildFileTree(syncedFiles);
+    // Build introspection data
+    const fileTree = buildFileTree(readResult.blobs);
 
     const envDetails: EnvDetails = {
       variables: envResult.variables,
@@ -148,21 +154,20 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
 
     const result: SyncResult = {
       attempted: true,
-      totalBlobs: syncStats.totalBlobs,
-      downloaded: syncStats.downloaded,
-      skipped: syncStats.skipped,
-      failed: syncStats.failed,
-      failedBlobs: syncStats.failedBlobs,
+      totalBlobs: readResult.totalBlobs,
+      downloaded: readResult.blobs.length,
+      failed: readResult.failed,
+      failedBlobs: readResult.failedBlobs,
       duration,
       remoteEnvLoaded,
       envSources: envResult.sources,
-      syncedFiles,
+      blobs: readResult.blobs,
       fileTree,
       envDetails,
     };
 
     logger.info(
-      `Azure VENV sync complete: ${result.downloaded} downloaded, ${result.skipped} skipped, ${result.failed} failed in ${result.duration}ms`,
+      `Azure VENV sync complete: ${result.downloaded} read, ${result.failed} failed in ${result.duration}ms`,
     );
 
     return result;
@@ -179,27 +184,7 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
       }
 
       logger.warn(`Azure sync failed (failOnError=false): ${error.message}`);
-
-      return {
-        attempted: true,
-        totalBlobs: 0,
-        downloaded: 0,
-        skipped: 0,
-        failed: 0,
-        failedBlobs: [],
-        duration: Date.now() - startTime,
-        remoteEnvLoaded: false,
-        envSources: {},
-        syncedFiles: [],
-        fileTree: [],
-        envDetails: {
-          variables: {},
-          sources: {},
-          localKeys: [],
-          remoteKeys: [],
-          osKeys: [],
-        },
-      };
+      return failedSyncResult(startTime);
     }
 
     // Unknown errors - wrap and handle based on failOnError
@@ -213,25 +198,6 @@ export async function initAzureVenv(options?: AzureVenvOptions): Promise<SyncRes
       `Azure sync failed with unexpected error (failOnError=false): ${error instanceof Error ? error.message : String(error)}`,
     );
 
-    return {
-      attempted: true,
-      totalBlobs: 0,
-      downloaded: 0,
-      skipped: 0,
-      failed: 0,
-      failedBlobs: [],
-      duration: Date.now() - startTime,
-      remoteEnvLoaded: false,
-      envSources: {},
-      syncedFiles: [],
-      fileTree: [],
-      envDetails: {
-        variables: {},
-        sources: {},
-        localKeys: [],
-        remoteKeys: [],
-        osKeys: [],
-      },
-    };
+    return failedSyncResult(startTime);
   }
 }
