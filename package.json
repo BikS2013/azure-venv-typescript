@@ -9,6 +9,7 @@
     "azure-venv": "./dist/cli/index.js"
   },
   "scripts": {
+    "prepare": "npm run build",
     "build": "tsc",
     "postbuild": "chmod +x dist/cli/index.js 2>/dev/null || true",
     "test": "vitest run",
