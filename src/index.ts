@@ -14,6 +14,7 @@ export type { WatchOptions, WatchChangeEvent, WatchResult, WatchChangeType } fro
 // Introspection utilities
 export { buildFileTree } from './introspection/file-tree.js';
 export { sortBlobs } from './introspection/manifest-reader.js';
+export { findBlobBySource } from './introspection/source-lookup.js';
 
 // Azure types
 export type { BlobInfo } from './azure/types.js';

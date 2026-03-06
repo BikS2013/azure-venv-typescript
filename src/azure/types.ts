@@ -2,20 +2,13 @@
  * Metadata for a single blob returned from listing.
  */
 export interface BlobInfo {
-  /** Full blob name including virtual directory path. Example: "config/prod/settings.json" */
   readonly name: string;
-
-  /** HTTP ETag for the blob. Used for change detection. Example: "0x8D..."  */
   readonly etag: string;
-
-  /** Last modification timestamp of the blob. */
   readonly lastModified: Date;
-
-  /** Content length in bytes. */
   readonly contentLength: number;
-
-  /** Content MD5 hash if available from Azure. */
-  readonly contentMD5: string | undefined;
+  readonly contentMD5?: string;
+  /** Raw blob metadata (key-value pairs from Azure Blob Storage). */
+  readonly metadata?: Readonly<Record<string, string>>;
 }
 
 /**

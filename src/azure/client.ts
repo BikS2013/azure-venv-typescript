@@ -55,7 +55,7 @@ export class AzureVenvBlobClient {
     try {
       const blobs: BlobInfo[] = [];
 
-      for await (const blob of this.containerClient.listBlobsFlat({ prefix })) {
+      for await (const blob of this.containerClient.listBlobsFlat({ prefix, includeMetadata: true })) {
         const blobInfo: BlobInfo = {
           name: blob.name,
           etag: blob.properties.etag ?? '',
@@ -64,6 +64,7 @@ export class AzureVenvBlobClient {
           contentMD5: blob.properties.contentMD5
             ? Buffer.from(blob.properties.contentMD5).toString('base64')
             : undefined,
+          metadata: blob.metadata as Record<string, string> | undefined,
         };
         blobs.push(blobInfo);
       }

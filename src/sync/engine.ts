@@ -155,6 +155,8 @@ export class SyncEngine {
       size: buffer.length,
       etag: blob.etag,
       lastModified: blob.lastModified.toISOString(),
+      sourceRegistry: blob.metadata?.source_registry,
+      sourcePath: blob.metadata?.source_path,
     };
   }
 }

@@ -67,6 +67,12 @@ export interface BlobContent {
 
   /** Last modified date (ISO 8601). */
   readonly lastModified: string;
+
+  /** Source registry where the file is maintained (from blob metadata `source_registry`). */
+  readonly sourceRegistry?: string;
+
+  /** Exact path of the file inside the source registry (from blob metadata `source_path`). */
+  readonly sourcePath?: string;
 }
 
 /**

@@ -25,6 +25,7 @@ src/
   introspection/
     manifest-reader.ts  - sortBlobs() - sorted flat list from BlobContent[]
     file-tree.ts        - buildFileTree() - hierarchical tree from BlobContent[]
+    source-lookup.ts    - findBlobBySource() - lookup blob by source_path@source_registry
     index.ts            - Barrel exports
   cli/
     index.ts            - CLI tool (azure-venv sync/watch)
@@ -68,7 +69,8 @@ docs/
         Test files are located in test_scripts/ directory.
         Tests cover: config parsing, validation, env loading,
         precedence resolution, logging, error classes,
-        watcher, introspection (sortBlobs, file-tree, types).
+        watcher, introspection (sortBlobs, file-tree, types),
+        source-lookup (findBlobBySource).
 
         For watch mode: npx vitest
         For coverage: npx vitest run --coverage
@@ -147,6 +149,65 @@ docs/
 | AZURE_VENV_WATCH_ENABLED | No | false | Enable watch mode after initial sync |
 
 *Required together - if one is set, both must be set. If neither is set, the library is a no-op.
+
+## Blob Metadata Convention
+
+All files stored in the Azure Blob Storage venv container are expected to carry the following custom metadata:
+
+| Metadata Key | Description |
+|--------------|-------------|
+| `source_registry` | The registry where the file is maintained (e.g., `github.com/org/repo`, `azure-devops/project/repo`) |
+| `source_path` | The exact path of the file inside the source registry (e.g., `config/app.json`, `scripts/deploy.sh`) |
+
+These metadata values are set on each blob when it is uploaded to Azure Blob Storage. During sync, the library reads this metadata and exposes it on each `BlobContent` object via `sourceRegistry` and `sourcePath` properties.
+
+### Source Lookup Expression
+
+Files can be retrieved from the synced blob list using a **source expression** in the format:
+
+```
+source_path@source_registry
+```
+
+- The `@` delimiter separates the path from the registry
+- The expression is split on the **last** `@`, so `source_path` may itself contain `@` characters
+- Both parts are compared **case-sensitively**
+- Returns `undefined` if no matching blob is found
+- Throws an `Error` if the expression format is invalid (missing `@`, or `@` at start/end)
+
+**Usage example:**
+
+```typescript
+import { initAzureVenv, findBlobBySource } from 'azure-venv';
+
+const result = await initAzureVenv();
+
+// Look up a file by its source origin
+const blob = findBlobBySource(result.blobs, 'config/app.json@github.com/org/repo');
+
+if (blob) {
+  console.log(blob.content.toString('utf-8'));
+  console.log(`Registry: ${blob.sourceRegistry}`);
+  console.log(`Source path: ${blob.sourcePath}`);
+}
+```
+
+### Public API
+
+- **`BlobContent.sourceRegistry`** (`string | undefined`) — from blob metadata `source_registry`
+- **`BlobContent.sourcePath`** (`string | undefined`) — from blob metadata `source_path`
+- **`findBlobBySource(blobs, expression)`** — lookup function exported from `azure-venv`
+- **`BlobInfo.metadata`** (`Record<string, string> | undefined`) — raw blob metadata from Azure
+
+## Design Decisions (v0.5.0 - Blob Metadata & Source Lookup)
+
+- **Blob metadata**: `listBlobs` now requests metadata from Azure (`includeMetadata: true`)
+- **BlobInfo.metadata**: Raw metadata `Record<string, string>` propagated from Azure SDK
+- **BlobContent.sourceRegistry / .sourcePath**: Extracted from blob metadata during download
+- **findBlobBySource()**: New introspection utility in `src/introspection/source-lookup.ts`
+- **Expression format**: `source_path@source_registry` — splits on last `@` for robustness
+- **No new config**: No additional environment variables required
+- **Backward compatible**: `sourceRegistry` and `sourcePath` are optional on `BlobContent`; existing consumers are unaffected
 
 ## Design Decisions (v0.4.0 - In-Memory Mode)
 
