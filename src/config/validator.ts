@@ -16,7 +16,7 @@ const azureVenvEnvSchema = z.object({
     { message: 'AZURE_VENV must use HTTPS scheme' },
   ),
   AZURE_VENV_SAS_TOKEN: z.string().min(1, 'AZURE_VENV_SAS_TOKEN must not be empty'),
-  AZURE_VENV_SAS_EXPIRY: z.string().datetime().optional(),
+  AZURE_VENV_SAS_EXPIRY: z.string().optional(),
   AZURE_VENV_FAIL_ON_ERROR: z
     .enum(['true', 'false'])
     .default('false')
@@ -54,13 +54,37 @@ const azureVenvEnvSchema = z.object({
  * @param sasToken - The SAS token string.
  * @returns Parsed Date or null if no expiry could be determined.
  */
+/**
+ * Parse a date string in various formats.
+ * Supports: yyyy-mm-dd, ISO 8601 datetime, and other Date-parseable formats.
+ * Returns null if the string cannot be parsed into a valid date.
+ */
+function parseFlexibleDate(value: string): Date | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  // Try direct Date constructor (handles ISO 8601 and many other formats)
+  const date = new Date(trimmed);
+  if (!isNaN(date.getTime())) {
+    return date;
+  }
+
+  return null;
+}
+
 function parseSasExpiry(expiryEnv: string | undefined, sasToken: string): Date | null {
   // Prefer explicit AZURE_VENV_SAS_EXPIRY if provided
   if (expiryEnv) {
-    const date = new Date(expiryEnv);
-    if (!isNaN(date.getTime())) {
+    const date = parseFlexibleDate(expiryEnv);
+    if (date !== null) {
       return date;
     }
+    throw new ConfigurationError(
+      `AZURE_VENV_SAS_EXPIRY has an invalid date format: "${expiryEnv}". ` +
+      'Accepted formats: yyyy-mm-dd, ISO 8601 datetime (e.g. 2025-12-31T00:00:00Z), ' +
+      'or any format parseable by Date constructor.',
+      'AZURE_VENV_SAS_EXPIRY',
+    );
   }
 
   // Fall back to 'se' parameter in the SAS token
@@ -68,8 +92,8 @@ function parseSasExpiry(expiryEnv: string | undefined, sasToken: string): Date |
     const params = new URLSearchParams(sasToken);
     const seValue = params.get('se');
     if (seValue) {
-      const date = new Date(seValue);
-      if (!isNaN(date.getTime())) {
+      const date = parseFlexibleDate(seValue);
+      if (date !== null) {
         return date;
       }
     }

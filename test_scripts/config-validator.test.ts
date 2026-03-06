@@ -149,6 +149,60 @@ describe('validateConfig', () => {
   // -------------------------------------------------------
   // Warns for soon-to-expire tokens (no throw)
   // -------------------------------------------------------
+  // -------------------------------------------------------
+  // AZURE_VENV_SAS_EXPIRY flexible date formats
+  // -------------------------------------------------------
+  it('accepts yyyy-mm-dd format for SAS_EXPIRY', () => {
+    const env = validEnv({ AZURE_VENV_SAS_EXPIRY: '2099-12-31' });
+    const config = validateConfig(env);
+    expect(config).not.toBeNull();
+    expect(config!.sasExpiry).toBeInstanceOf(Date);
+    expect(config!.sasExpiry!.getFullYear()).toBe(2099);
+  });
+
+  it('accepts ISO 8601 datetime for SAS_EXPIRY', () => {
+    const env = validEnv({ AZURE_VENV_SAS_EXPIRY: '2099-12-31T23:59:59Z' });
+    const config = validateConfig(env);
+    expect(config).not.toBeNull();
+    expect(config!.sasExpiry).toBeInstanceOf(Date);
+  });
+
+  it('accepts ISO 8601 with timezone offset for SAS_EXPIRY', () => {
+    const env = validEnv({ AZURE_VENV_SAS_EXPIRY: '2099-12-31T23:59:59+02:00' });
+    const config = validateConfig(env);
+    expect(config).not.toBeNull();
+    expect(config!.sasExpiry).toBeInstanceOf(Date);
+  });
+
+  it('accepts date with time but no timezone for SAS_EXPIRY', () => {
+    const env = validEnv({ AZURE_VENV_SAS_EXPIRY: '2099-12-31T23:59:59' });
+    const config = validateConfig(env);
+    expect(config).not.toBeNull();
+    expect(config!.sasExpiry).toBeInstanceOf(Date);
+  });
+
+  it('accepts month/day/year format for SAS_EXPIRY', () => {
+    const env = validEnv({ AZURE_VENV_SAS_EXPIRY: '12/31/2099' });
+    const config = validateConfig(env);
+    expect(config).not.toBeNull();
+    expect(config!.sasExpiry).toBeInstanceOf(Date);
+  });
+
+  it('throws ConfigurationError for invalid SAS_EXPIRY date string', () => {
+    const env = validEnv({ AZURE_VENV_SAS_EXPIRY: 'not-a-date' });
+    expect(() => validateConfig(env)).toThrow(ConfigurationError);
+    expect(() => validateConfig(env)).toThrow(/invalid date format/i);
+  });
+
+  it('throws ConfigurationError for whitespace-only SAS_EXPIRY', () => {
+    const env = validEnv({ AZURE_VENV_SAS_EXPIRY: '   ' });
+    expect(() => validateConfig(env)).toThrow(ConfigurationError);
+    expect(() => validateConfig(env)).toThrow(/invalid date format/i);
+  });
+
+  // -------------------------------------------------------
+  // Warns for soon-to-expire tokens (no throw)
+  // -------------------------------------------------------
   it('warns but does not throw when SAS token expires within 7 days', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
