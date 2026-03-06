@@ -16,6 +16,12 @@ export { buildFileTree } from './introspection/file-tree.js';
 export { sortBlobs } from './introspection/manifest-reader.js';
 export { findBlobBySource } from './introspection/source-lookup.js';
 
+// Asset store
+export { AssetStore } from './assets/asset-store.js';
+export { initAssetStore } from './assets/init-asset-store.js';
+export { resolveAssetKey } from './assets/resolve-asset-key.js';
+export type { AssetStoreOptions, InitAssetStoreOptions } from './assets/types.js';
+
 // Azure types
 export type { BlobInfo } from './azure/types.js';
 

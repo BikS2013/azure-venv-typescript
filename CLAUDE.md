@@ -27,6 +27,12 @@ src/
     file-tree.ts        - buildFileTree() - hierarchical tree from BlobContent[]
     source-lookup.ts    - findBlobBySource() - lookup blob by source_path@source_registry
     index.ts            - Barrel exports
+  assets/
+    asset-store.ts      - AssetStore class - registry-scoped asset retrieval with caching
+    init-asset-store.ts - initAssetStore() - two-scope initialization helper
+    resolve-asset-key.ts - resolveAssetKey() - env var to asset key resolution
+    types.ts            - AssetStoreOptions, InitAssetStoreOptions
+    index.ts            - Barrel exports
   cli/
     index.ts            - CLI tool (azure-venv sync/watch)
   errors/               - Custom error hierarchy
@@ -70,7 +76,8 @@ docs/
         Tests cover: config parsing, validation, env loading,
         precedence resolution, logging, error classes,
         watcher, introspection (sortBlobs, file-tree, types),
-        source-lookup (findBlobBySource).
+        source-lookup (findBlobBySource),
+        asset-store (AssetStore, resolveAssetKey).
 
         For watch mode: npx vitest
         For coverage: npx vitest run --coverage
@@ -198,6 +205,19 @@ if (blob) {
 - **`BlobContent.sourcePath`** (`string | undefined`) — from blob metadata `source_path`
 - **`findBlobBySource(blobs, expression)`** — lookup function exported from `azure-venv`
 - **`BlobInfo.metadata`** (`Record<string, string> | undefined`) — raw blob metadata from Azure
+
+## Design Decisions (v0.6.0 - Asset Store)
+
+- **AssetStore class**: Registry-scoped wrapper around `SyncResult.blobs` for asset retrieval
+- **initAssetStore()**: Two-scope initialization helper that encapsulates process.env swap for container-level sync
+- **resolveAssetKey()**: Utility to read env var as asset key (for env-var-to-asset aliasing pattern)
+- **Short keys**: Keys without `@` automatically get `@registry` appended via the configured default registry
+- **getJsonAsset<T>()**: Built-in JSON parsing; YAML left to users (no forced dependency)
+- **getRawAsset()**: Returns Buffer for binary assets
+- **Optional caching**: String cache with configurable TTL (default: 0 = disabled)
+- **refresh()**: Only available on stores created via `initAssetStore()` (which stores its init config)
+- **No Express middleware**: REST layer is user-land concern; reference document provides patterns
+- **No YAML dependency**: Library stays lightweight; users add `yaml` package themselves
 
 ## Design Decisions (v0.5.0 - Blob Metadata & Source Lookup)
 
